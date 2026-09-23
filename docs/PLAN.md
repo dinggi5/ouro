@@ -193,11 +193,13 @@ MCP 명세 <https://modelcontextprotocol.io/specification>, iCalendar RRULE RFC 
 | 8 | Codex·반복·이어서 부탁 | |
 | 9 | 서명·업데이트·배포·.mcpb | brew 설치 |
 
-## 13. 사장이 정할 것
+## 13. 확정된 결정 (개발 0, 사장)
 
-1. ~~Tauri vs Swift~~ → **Tauri 확정**(개발 0, 사장).
-1-1. ~~캘린더 저장소~~ → **앱 자체 캘린더 확정**(개발 0, 사장). 맥 기본 캘린더는 v0.2 이후 선택 기능.
-2. **공개 여부·라이선스** — Kura 처럼 MIT 오픈소스?
-3. **최소 macOS** — Apple FM 을 기본 엔진으로 쓰면 macOS 26+. Kura 는 11+.
-4. **이름 표기** — 앱 이름 `Ouro`, 한글 `우로우로`? 번들 id `com.dinggi5.ouro`?
-5. **부탁 대상 우선순위** — Claude Code 먼저(권장, 이 맥의 주력) → Codex.
+| 항목 | 결정 | 따라오는 것 |
+|---|---|---|
+| 스택 | **Tauri 2** | Kura 의 팝오버·사이드카·배포 재사용 |
+| 캘린더 | **앱 자체 캘린더** (`~/.ouro/ouro.db`) | 맥 기본 캘린더는 v0.2 이후 선택 기능 |
+| 공개 | **비공개(클로즈드 소스)** | 라이선스 = All rights reserved. ⚠️ Kura 는 업데이트 파일(`latest.json`·DMG)을 **공개 GitHub Releases** 에서 받는다 — 저장소가 비공개면 그 주소가 안 열린다. 배포 단계(개발 9)에서 받을 곳을 따로 정한다(비공개 저장소 + 공개 전용 릴리스 저장소, 또는 정적 호스팅). brew cask 도 공개 URL 이 필요하다 |
+| 최소 macOS | **26 이상** | Apple Foundation Models 를 기본 엔진으로 쓸 수 있다. `minimumSystemVersion = "26.0"` |
+| 이름 | 앱 `Ouro`, 한글 별칭 우로우로 | 번들 id `com.dinggi5.ouro`, 데이터 `~/.ouro` |
+| 부탁 대상 순서 | **Claude Code 먼저**(개발 5), Codex 는 v0.2(개발 8) | 디스패처를 처음부터 «대상» 추상화로 짜서 Codex 는 갈래 하나 추가로 끝나게 |
