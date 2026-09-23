@@ -199,7 +199,7 @@ MCP 명세 <https://modelcontextprotocol.io/specification>, iCalendar RRULE RFC 
 |---|---|---|
 | 스택 | **Tauri 2** | Kura 의 팝오버·사이드카·배포 재사용 |
 | 캘린더 | **앱 자체 캘린더** (`~/.ouro/ouro.db`) | 맥 기본 캘린더는 v0.2 이후 선택 기능 |
-| 공개 | **비공개(클로즈드 소스)** | 라이선스 = All rights reserved. ⚠️ Kura 는 업데이트 파일(`latest.json`·DMG)을 **공개 GitHub Releases** 에서 받는다 — 저장소가 비공개면 그 주소가 안 열린다. 배포 단계(개발 9)에서 받을 곳을 따로 정한다(비공개 저장소 + 공개 전용 릴리스 저장소, 또는 정적 호스팅). brew cask 도 공개 URL 이 필요하다 |
+| 공개 | **오픈소스, MIT** (Kura 와 같음) | 처음엔 비공개로 정했다가 같은 날 뒤집음. Kura 의 업데이트 경로(공개 GitHub Releases 의 `latest.json`·DMG)와 brew cask 를 그대로 쓸 수 있다. 로컬·프라이버시를 내세우는 앱이라 «코드를 직접 확인할 수 있다» 가 곧 신뢰의 근거가 된다 |
 | 최소 macOS | **26 이상** | Apple Foundation Models 를 기본 엔진으로 쓸 수 있다. `minimumSystemVersion = "26.0"` |
 | 이름 | 앱 `Ouro`, 한글 별칭 우로우로 | 번들 id `com.dinggi5.ouro`, 데이터 `~/.ouro` |
 | 부탁 대상 순서 | **Claude Code 먼저**(개발 5), Codex 는 v0.2(개발 8) | 디스패처를 처음부터 «대상» 추상화로 짜서 Codex 는 갈래 하나 추가로 끝나게 |
