@@ -19,9 +19,9 @@
 |---|---|---|---|
 | ① | 「MCP 로 연결되는 캘린더」가 곧 양방향 | **문이 둘이다.** 들어오는 문 = MCP(AI → 캘린더), 나가는 문 = **디스패처**(캘린더 → AI) | MCP 서버는 요청에 답만 한다. 스스로 대화를 시작할 수 없다(MCP `sampling` 도 «대화를 여는» 기능이 아니고 클라이언트 지원도 들쭉날쭉). 「특정 시간에 AI 에게 말 걸기」는 MCP 로는 원리상 안 된다 |
 | ② | 클로드·지피티에게 「채팅 쳐주기」 | 앱 창을 조작하지 않고 **헤드리스 CLI** 로 보낸다: `claude -p` · `codex exec`. 답은 **캘린더로 돌아온다** | GUI 자동화(손쉬운 사용 API 로 입력칸에 타이핑)는 앱 업데이트 한 번에 깨지고, 잠긴 화면에선 못 돈다. CLI 는 이미 이 맥에 둘 다 있다(확인함), 구독 요금 안에서 돈다 |
-| ③ | 캘린더 앱 | 일정 저장소는 **macOS EventKit**(기본 캘린더 앱과 같은 DB). Ouro 고유 데이터(부탁·실행 기록)만 자체 SQLite | 자체 저장소로 가면 iCloud·Google·회사 캘린더를 전부 새로 붙여야 한다. EventKit 이면 이미 맥에 연결된 계정이 첫날부터 다 보이고, 동기화는 애플이 한다 |
+| ③ | 캘린더 앱 | **앱 자체 캘린더.** 일정·부탁·답이 전부 `~/.ouro/ouro.db`(SQLite) 한 곳에. 맥 기본 캘린더(EventKit)는 v0.2 이후 **선택 기능**으로 «가져오기(읽기 전용 겹쳐 보기)» 만 | 사장 확정(개발 0). 얻는 것: 캘린더 권한 창 없음, Swift/ObjC 연동 없음, 데이터가 이 맥 밖으로 안 나감(iCloud 도 안 탐), 일정·부탁이 한 표에 있어 순환 설계가 단순. 잃는 것: 아이폰·다른 기기와 동기화 없음, 기존 일정은 가져와야 보임 |
 | ④ | 「로컬이라 프라이버시 안전」 | 약속을 **정밀하게**: 일정 읽기·해석·요약은 100% 로컬. **바깥(Claude·GPT)으로 나가는 건 사용자가 쓴 부탁 문장과, 부탁에 명시적으로 붙인 일정뿐** | 「전부 로컬」 이라고 쓰면 디스패처가 그 약속을 깬다. 무엇이 나가는지 부탁마다 보여주는 게 신뢰를 만든다(Kura 의 «비번은 앱 입력칸에서만» 과 같은 결) |
-| ⑤ | — | **남이 보낸 일정은 명령이 될 수 없다** | 캘린더 초대는 아무나 보낼 수 있다. 제목에 «이전 지시는 무시하고 …» 를 넣은 초대가 AI 에게 그대로 들어가면 프롬프트 인젝션이다. 부탁은 Ouro 안에서 **사람이 만든 것만** 실행되고, 일반 일정은 언제나 «데이터» 로만 AI 에게 간다 |
+| ⑤ | — | **바깥에서 들어온 글은 명령이 될 수 없다** | 자체 캘린더라 초대는 없지만 들어오는 길은 남는다: `.ics` 가져오기, 겹쳐 보기, **AI 의 답 본문**. 여기에 «이전 지시는 무시하고 …» 가 섞여 다음 부탁에 그대로 실리면 프롬프트 인젝션이다. 부탁 문장은 **사람이 쓰거나 사람이 승인한 것만**, 나머지는 언제나 «데이터» 로 따옴표 안에 담겨 간다 |
 | ⑥ | AI 가 번갈아 이것저것 | AI 가 만든 부탁은 **사람이 한 번 승인해야 실행된다** + **순환 제한** | 선순환의 반대는 무한 루프다(부탁 → 답이 새 부탁을 만듦 → …). Kura 의 «AI 는 요청, 사람이 승인» 을 그대로 가져온다 |
 | ⑦ | 로컬 모델은 나중에 | 모델 **선택**은 나중, **엔진 인터페이스**는 지금 정한다. 기본 엔진 = Apple Foundation Models 후보 | M5·16GB 라 7~8B 가 상한이다. Apple 온디바이스 모델은 다운로드 0·메모리 부담이 OS 몫이고 구조화 출력·도구 호출을 지원한다. 단 **날짜 계산은 LLM 에게 안 시킨다**(§7) |
 
@@ -54,19 +54,20 @@ ChatGPT Tasks·Claude 예약 작업과 가장 다른 점이 이거다(그쪽 결
 
 | 이름 | 무엇 | 저장 |
 |---|---|---|
-| **일정** | 보통 캘린더 일정. 읽기·쓰기 | EventKit |
+| **일정** | 보통 캘린더 일정. 읽기·쓰기 | `~/.ouro/ouro.db` |
 | **부탁** | «언제 · 누구에게(Claude/Codex/로컬) · 무엇을 · 어떤 일정을 붙여서» | `~/.ouro/ouro.db` |
 | **실행** | 부탁 한 번 돈 기록 — 시작·끝·종료코드·보낸 원문·받은 답 | 같은 DB |
 | **답** | 실행 결과. 캘린더에 점으로 뜨고, 펼치면 본문. 「이걸로 일정 만들기」「이어서 부탁」 | 같은 DB |
 
-- 부탁은 **반복** 가능(매일 아침 9시 브리핑 등). 반복은 RRULE 로 EventKit 과 같은 규칙을 쓴다.
+- 부탁·일정은 **반복** 가능(매일 아침 9시 브리핑 등). 반복은 표준 RRULE(RFC 5545) — 나중에 `.ics` 가져오기·내보내기가 그대로 된다.
+- 일정과 부탁은 **같은 표의 두 종류**다(`kind = event | errand`). 일정 하나를 «부탁으로 바꾸기» 가 한 칸 바꾸는 일이 된다.
 - 「이어서 부탁」 은 `claude -p --resume <session>` 으로 **같은 대화를 잇는다** — 어제의 답을 기억한 채 오늘 부탁이 돈다.
   이게 «순환» 의 실체다.
 
 ## 5. 기능 범위
 
 **MVP (v0.1)**
-1. 메뉴바 팝오버: 오늘/주 목록 + 작은 월 달력. EventKit 읽기.
+1. 메뉴바 팝오버: 오늘/주 목록 + 작은 월 달력. 자체 DB 읽기·쓰기·수정·삭제, 알림(시작 N분 전).
 2. 빠른 입력 한 줄: 「내일 3시 치과」 → 일정 카드 미리보기 → Enter.
 3. 부탁 만들기·편집·즉시 실행·예약 실행(Claude Code 먼저).
 4. 답을 캘린더에 표시 + 알림 센터 알림.
@@ -78,11 +79,12 @@ ChatGPT Tasks·Claude 예약 작업과 가장 다른 점이 이거다(그쪽 결
 - 로컬 엔진 선택(Ollama), 모델 성능 등급 안내
 - 일정 쓰기 MCP 도구(승인 정책은 §8)
 - Claude 데스크톱용 `.mcpb` 번들(Kura 와 같은 길)
+- `.ics` 내보내기·가져오기, 그리고 선택 기능으로 맥 기본 캘린더(iCloud·Google) **읽기 전용 겹쳐 보기** — 켜야만 권한을 묻는다
 
 **안 하는 것**
 - 우리 서버·계정·클라우드 동기화 — 영원히.
 - GUI 자동화로 채팅앱 조작.
-- 남의 초대 일정을 부탁으로 승격(사람이 복사해서 새로 만드는 건 된다).
+- 가져온 일정을 그대로 부탁으로 승격(사람이 복사해서 새로 만드는 건 된다).
 
 ## 6. 아키텍처 — Kura 대응표
 
@@ -91,8 +93,7 @@ ChatGPT Tasks·Claude 예약 작업과 가장 다른 점이 이거다(그쪽 결
                                                │ Unix 소켓 ~/.ouro/ouro.sock
                                                ▼
 [ 메뉴바 팝오버 (React) ] ◀─IPC─▶ [ Ouro.app (Tauri 2 / Rust) ]
-                                   ├─ EventKit (objc2-event-kit)
-                                   ├─ ouro.db (SQLite, rusqlite)
+                                   ├─ ouro.db (SQLite, rusqlite) — 일정·부탁·답 전부
                                    ├─ 스케줄러 + 디스패처 → claude -p / codex exec
                                    └─ 엔진 ─▶ ① Apple FM (Swift 헬퍼) ② Ollama(localhost) ③ 없음
 ```
@@ -107,11 +108,11 @@ ChatGPT Tasks·Claude 예약 작업과 가장 다른 점이 이거다(그쪽 결
 | 업데이트·배포 | updater + DMG + brew cask | 같음 | 개발 후반 |
 
 **왜 Tauri 인가 (Swift 네이티브 대신)** — 솔직한 저울:
-- Swift 가 유리한 것: EventKit·Foundation Models·MLX 가 모국어, `MenuBarExtra` 한 줄.
+- Swift 가 유리한 것: Foundation Models·MLX 가 모국어, `MenuBarExtra` 한 줄.
 - Tauri 가 유리한 것: Kura 에서 60번 넘게 다듬은 팝오버·사이드카·서명·업데이트·배포 파이프라인과 디자인 코드를 **그대로** 가져온다. MCP 사이드카는 어차피 Rust.
-- 결론: **Tauri.** Swift 가 꼭 필요한 두 곳만 좁게 붙인다 — EventKit 은 `objc2-event-kit`(Rust 에서 직접), Foundation Models 는 Swift 전용 API 라 **작은 Swift 헬퍼 바이너리**를 사이드카로(Kura 의 `kura-cli` 와 같은 자리).
-- ⚠️ 캘린더 권한(TCC)은 **요청한 앱 번들**에 붙는다. `tauri dev` 로 띄우면 터미널 앱 권한으로 잡혀 헷갈린다 — 권한 흐름은 빌드한 `.app` 으로 확인한다. `Info.plist` 에 `NSCalendarsFullAccessUsageDescription` 필수.
-- ⚠️ MCP 사이드카가 EventKit 을 **직접** 부르면 권한이 Claude 앱 쪽에 붙는다. 그래서 사이드카는 절대 EventKit 을 안 만지고 소켓으로 앱에 묻는다.
+- 자체 캘린더로 정하면서 EventKit 연동이 빠져 **Swift 쪽 이유가 하나 줄었다.** 결론: **Tauri.** Foundation Models 만 Swift 전용 API 라 **작은 Swift 헬퍼 바이너리**를 사이드카로(Kura 의 `kura-cli` 와 같은 자리).
+- MCP 사이드카는 DB 를 **직접 열지 않고** 소켓으로 앱에 묻는다. 쓰는 곳이 앱 하나여야 승인·알림·팝오버 갱신이 한 길로 지나가고, SQLite 동시 쓰기 문제도 없다.
+- DB 는 매일 `~/.ouro/backup/` 에 스냅숏(7일 보관) — 동기화가 없으니 이 파일이 유일한 원본이다.
 
 ## 7. 로컬 AI — 무엇을 시키고 무엇을 안 시키나
 
@@ -134,8 +135,8 @@ trait Engine { fn parse(&self, text, now, tz) -> Draft; fn summarize(&self, item
 | 없음 | 규칙 파서만 | AI 없이도 빠른 입력이 된다 — 바닥을 보장 |
 
 출처: Apple Foundation Models 문서 <https://developer.apple.com/documentation/foundationmodels>,
-EventKit <https://developer.apple.com/documentation/eventkit>, Ollama 구조화 출력 <https://ollama.com/blog/structured-outputs>,
-MCP 명세 <https://modelcontextprotocol.io/specification>.
+Ollama 구조화 출력 <https://ollama.com/blog/structured-outputs>,
+MCP 명세 <https://modelcontextprotocol.io/specification>, iCalendar RRULE RFC 5545 <https://www.rfc-editor.org/rfc/rfc5545>.
 
 ## 8. MCP 도구 (초안)
 
@@ -148,7 +149,7 @@ MCP 명세 <https://modelcontextprotocol.io/specification>.
 | `propose_errand(...)` | 부탁 제안 | **사람 승인 + 보낼 원문 표시** |
 | `update/delete_event` | v0.2 이후. 삭제는 항상 승인 | 승인 |
 
-- **「숨김 캘린더」 설정**: 사용자가 고른 캘린더(예: 병원·가족)는 MCP 로 아예 안 나간다.
+- **「비공개」 표시**: 일정마다(또는 분류마다) 비공개로 두면 MCP 로 아예 안 나간다(예: 병원·가족).
 - 앱이 꺼져 있으면 모든 도구가 「Ouro 앱을 켜 주세요」 로 답한다(Kura 의 하트비트 규칙).
 
 ## 9. 디스패처 — 안전 규칙
@@ -183,7 +184,7 @@ MCP 명세 <https://modelcontextprotocol.io/specification>.
 |---|---|---|
 | 0 | 기획 (이 문서) | 문서 커밋 |
 | 1 | 스캐폴드: Tauri 팝오버 + 토큰 + 빈 화면, Kura `tray.rs` 이식 | 메뉴바 클릭 → 팝오버 |
-| 2 | EventKit 읽기 + 오늘/주/월 뷰 + 권한 흐름 | 실제 내 일정이 보인다(.app 빌드로) |
+| 2 | SQLite 스키마(일정·부탁·실행) + 일정 CRUD + 오늘/주/월 뷰 + 알림 + 백업 | 팝오버에서 일정을 만들고 고치고 지운다, 재시작해도 남는다 |
 | 3 | 규칙 날짜 파서 + 빠른 입력 → 일정 쓰기 | 한국어 상대날짜 테스트 50개 통과 |
 | 4 | `ouro-mcp` 읽기 도구 + 소켓 + 하트비트 | Claude Code 에서 「내일 일정」 |
 | 5 | 부탁 모델 + 디스패처(Claude) + 답 표시 | 예약 부탁이 돌고 답이 캘린더에 |
@@ -194,7 +195,8 @@ MCP 명세 <https://modelcontextprotocol.io/specification>.
 
 ## 13. 사장이 정할 것
 
-1. **Tauri(권장) vs Swift 네이티브** — 위 §6 저울.
+1. ~~Tauri vs Swift~~ → **Tauri 확정**(개발 0, 사장).
+1-1. ~~캘린더 저장소~~ → **앱 자체 캘린더 확정**(개발 0, 사장). 맥 기본 캘린더는 v0.2 이후 선택 기능.
 2. **공개 여부·라이선스** — Kura 처럼 MIT 오픈소스?
 3. **최소 macOS** — Apple FM 을 기본 엔진으로 쓰면 macOS 26+. Kura 는 11+.
 4. **이름 표기** — 앱 이름 `Ouro`, 한글 `우로우로`? 번들 id `com.dinggi5.ouro`?
