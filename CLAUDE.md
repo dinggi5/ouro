@@ -1,6 +1,6 @@
 # Ouro (우로우로) — 선순환 캘린더
 
-맥 메뉴바 캘린더 + 로컬 AI + Claude/Codex 디스패처 + MCP. 기획은 `docs/PLAN.md`, 디자인은 `DESIGN.md`, 기록은 `DEVLOG.md`.
+맥 메뉴바 캘린더(로컬 저장) + Claude/Codex 디스패처 + MCP. 로컬 AI 모델은 MVP 에서 뺐다(사장이 정할 때 추가). 기획은 `docs/PLAN.md`, 디자인은 `DESIGN.md`, 기록은 `DEVLOG.md`.
 
 - 참고 구현: `~/프로젝트/지갑지갑` (Kura). 팝오버(`src-tauri/src/tray.rs`)·사이드카 빌드(`scripts/build-sidecars.sh`)·
   `.mcpb`·업데이트 파이프라인을 여기서 가져온다. 그 리포는 **읽기만** 한다.
