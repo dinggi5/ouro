@@ -1,0 +1,6 @@
+<!-- 메뉴바 아이콘 — 빈 원 ◯ (부탁 없음/대기). DESIGN: 트레이도 ◯ ◔ ● 세 상태를 쓴다(◔·● 는 개발 5).
+     템플릿 이미지라 검정 + 알파만(시스템이 메뉴바 밝기에 맞춰 반전). 44x44 = 22pt @2x.
+     수정 시: rsvg-convert -w 44 -h 44 tray-idle.svg -o tray-idle.png -->
+<svg xmlns="http://www.w3.org/2000/svg" width="44" height="44" viewBox="0 0 44 44">
+  <circle cx="22" cy="22" r="12.5" fill="none" stroke="#000" stroke-width="3.4"/>
+</svg>

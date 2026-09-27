@@ -1,0 +1,6 @@
+<!-- 앱 아이콘 원본 — 흰 판 위 액센트 고리 하나(선순환 = 닫힌 원). 1024 캔버스, macOS 아이콘 격자(824 판).
+     수정 시: npx tauri icon src-tauri/icons/icon.svg -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#F9FAFB"/>
+  <circle cx="512" cy="512" r="230" fill="none" stroke="#3182F6" stroke-width="72"/>
+</svg>

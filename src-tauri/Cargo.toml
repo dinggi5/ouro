@@ -1,0 +1,22 @@
+[package]
+name = "ouro"
+version = "0.0.1"
+description = "선순환 캘린더 — 맥 메뉴바 캘린더 + AI 디스패처 + MCP"
+authors = ["dinggi5"]
+license = "MIT"
+edition = "2021"
+
+[lib]
+# `_lib` 접미사 = 바이너리 이름과 겹치지 않게(Tauri 템플릿 관례, Windows 링크 충돌 회피).
+name = "ouro_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# tray-icon = 메뉴바 상주, image-png = 트레이 아이콘을 PNG 로 싣기,
+# macos-private-api = 투명 창(팝오버 둥근 모서리). App Store 에선 막히는 옵션이지만
+# Ouro 는 DMG·brew 배포라 무관(PLAN §6, Kura 와 같은 길).
+tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
+serde_json = "1"

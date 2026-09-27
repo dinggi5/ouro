@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "팝오버 창 권한 — 앱 커맨드 호출만(core:default). 플러그인이 늘면 여기에 하나씩.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

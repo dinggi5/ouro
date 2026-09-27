@@ -1,0 +1,118 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------
+   Pretendard — 앱 안에 번들(외부 CDN 0). 가변 폰트 하나로 모든 굵기를 덮는다.
+   부분집합을 만들지 않는 이유: 일정 제목·AI 답 본문에 임의의 글자가 들어온다(빠진 글리프 = 두부).
+   가공하면 OFL 의 Reserved Font Name 조항 때문에 이름을 못 쓴다. 라이선스는 public/fonts 에 동봉.
+--------------------------------------------------------------- */
+@font-face {
+  font-family: "Pretendard Variable";
+  font-style: normal;
+  font-weight: 45 920;
+  font-display: swap;
+  src:
+    url("/fonts/PretendardVariable.woff2") format("woff2-variations"),
+    url("/fonts/PretendardVariable.woff2") format("woff2");
+}
+
+/* ---------------------------------------------------------------
+   토큰 — ~/.claude/DESIGN.md 를 그대로 옮긴다. 달라지는 것만 프로젝트 DESIGN.md 에 있다.
+   Tailwind 유틸리티 이름 = 토큰 이름(bg-canvas, text-ink-muted, rounded-lg …).
+   다크 짝은 아래 :root 미디어 쿼리에서 같은 변수 이름으로 갈아 끼운다(전역 규칙 6).
+--------------------------------------------------------------- */
+@theme {
+  --color-*: initial;
+  --color-transparent: transparent;
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-sunken: var(--surface-sunken);
+  --color-hairline: var(--hairline);
+  --color-ink: var(--ink);
+  --color-ink-secondary: var(--ink-secondary);
+  --color-ink-muted: var(--ink-muted);
+  --color-accent: var(--accent);
+  --color-on-accent: #ffffff;
+  --color-danger: #f04452;
+  --color-success: #03b26c;
+
+  --font-sans: "Pretendard Variable", "Pretendard", "Apple SD Gothic Neo", system-ui, sans-serif;
+  --font-numeric: "SF Pro Rounded", "Pretendard Variable", system-ui, sans-serif;
+
+  /* 크기 사다리(애플 실측) — 이 밖의 크기를 만들지 않는다. 팝오버는 본문 15 부터(Ouro DESIGN). */
+  --text-*: initial;
+  --text-heading: 24px;
+  --text-heading--line-height: 1.17;
+  --text-subheading: 21px;
+  --text-subheading--line-height: 1.19;
+  --text-body: 17px;
+  --text-body--line-height: 1.6;
+  --text-body-sm: 15px;
+  --text-body-sm--line-height: 1.5;
+  --text-label: 14px;
+  --text-label--line-height: 1.29;
+  --text-caption: 13px;
+  --text-caption--line-height: 1.38;
+  --text-micro: 12px;
+  --text-micro--line-height: 1.33;
+
+  --radius-*: initial;
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-pill: 999px;
+
+  --ease-standard: cubic-bezier(0.4, 0, 0.6, 1);
+  --ease-out: cubic-bezier(0.25, 0.1, 0.3, 1);
+}
+
+:root {
+  /* 라이트 — 토스 grey 실측 */
+  --canvas: #f9fafb;
+  --surface: #ffffff;
+  --surface-sunken: #f2f4f6;
+  --hairline: #e5e8eb;
+  --ink: #191f28;
+  --ink-secondary: #4e5968;
+  --ink-muted: #8b95a1;
+  --accent: #3182f6;
+
+  font-family: var(--font-sans);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  /* 창이 투명이다 — 바닥은 셸이 둥근 모서리로 칠한다. 여기서 칠하면 모서리가 사각으로 뭉개진다. */
+  background: transparent;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --canvas: #151517;
+    --surface: #1c1c1f;
+    --surface-sunken: #242428;
+    --hairline: #33333a;
+    --ink: #f2f2f4;
+    --ink-secondary: #9a9aa1;
+    --ink-muted: #6e6e73;
+    --accent: #64a8ff; /* accent-on-dark */
+  }
+}
+
+html,
+body {
+  margin: 0;
+  height: 100vh;
+  background: transparent;
+  /* 팝오버는 고정 크기 창 — 바깥 고무줄 스크롤을 없애고 셸 안에서만 스크롤한다. */
+  overflow: hidden;
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}

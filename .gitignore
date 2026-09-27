@@ -1,0 +1,34 @@
+# --- Node / 프론트 ---
+node_modules/
+dist/
+*.local
+.vite/
+
+# --- Rust / Tauri ---
+target/
+src-tauri/target/
+src-tauri/gen/schemas/
+**/*.rs.bk
+
+# --- 환경 / 비밀 ---
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.p8
+
+# --- 사용자 데이터 (절대 커밋 금지) ---
+.ouro/
+*.db
+
+# --- macOS / 에디터 ---
+.DS_Store
+.idea/
+.vscode/
+
+# --- AI 코딩 에이전트 로컬 파일 ---
+.claude/
+.codex/
+
+*.log
