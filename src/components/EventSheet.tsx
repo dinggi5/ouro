@@ -127,12 +127,15 @@ const field =
 export function EventSheet({
   initial,
   editing,
+  notice,
   onSave,
   onDelete,
   onClose,
 }: {
   initial: Draft;
   editing: OuroEvent | null;
+  /** 빠른 입력이 남긴 경고 — 시트 위에 그대로 보인다(왜 바로 안 넣었는지). */
+  notice?: string[];
   onSave: (input: EventInput) => Promise<string | null>;
   onDelete: () => void;
   onClose: () => void;
@@ -188,6 +191,11 @@ export function EventSheet({
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-5 pb-4">
+        {notice?.map((n) => (
+          <p key={n} className="text-caption text-ink-muted">
+            {n}
+          </p>
+        ))}
         <input
           ref={titleRef}
           value={d.title}

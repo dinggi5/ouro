@@ -12,7 +12,7 @@ import { MonthGrid, monthGridRange } from "./components/MonthGrid";
 import { blankDraft, EventSheet, fromEvent, toInput, type Draft } from "./components/EventSheet";
 import { QuickBar } from "./components/QuickBar";
 import { api, errorText, eventsOn, type EventInput, type OuroEvent } from "./lib/events";
-import { quickApi, quickToDraft, type QuickDraft } from "./lib/quick";
+import { canDirect, quickApi, quickToDraft, type QuickDraft } from "./lib/quick";
 import {
   addDays,
   addMonths,
@@ -81,7 +81,7 @@ function title(view: View, cursor: Date): { main: string; sub: string } {
 }
 
 /** fromQuick = 빠른 입력에서 열린 시트 — 저장하면 입력칸을 비운다(취소하면 친 글이 남는다). */
-type Sheet = { draft: Draft; editing: OuroEvent | null; key: number; fromQuick?: boolean };
+type Sheet = { draft: Draft; editing: OuroEvent | null; key: number; fromQuick?: boolean; notice?: string[] };
 type Toast = { text: string; undo?: () => void; key: number };
 
 function App() {
@@ -166,10 +166,11 @@ function App() {
   const quickCommit = async (q: QuickDraft, detail: boolean) => {
     if (q.miss) quickApi.recordMiss(q.miss).catch(() => {});
     const draft = quickToDraft(q, blankDraft(cursor, new Date()));
-    // 날짜를 못 찾았으면 fallback(고른 날 9시)이 채워져 있어도 바로 넣지 않는다 — 그건 추측이다. 시트에서 사람이 본다.
-    const input = detail || !q.startDate ? null : toInput(draft);
+    // 바로 넣지 않는 때: 날짜를 못 찾았다(fallback 은 추측이다), 파서가 경고했다(없는 날짜를 빼고 남은 시각·반복의 첫 번 등,
+    // 쓴 것과 다른 일정이 된다 — 코덱스 개발 3). 둘 다 시트에서 사람이 보고 저장한다. 판단은 `canDirect` 하나.
+    const input = detail || !canDirect(q) ? null : toInput(draft);
     if (!input || typeof input === "string") {
-      setSheet({ draft, editing: null, key: ++sheetKey.current, fromQuick: true });
+      setSheet({ draft, editing: null, key: ++sheetKey.current, fromQuick: true, notice: q.warnings });
       return;
     }
     try {
@@ -351,6 +352,7 @@ function App() {
             key={sheet.key}
             initial={sheet.draft}
             editing={sheet.editing}
+            notice={sheet.notice}
             onSave={save}
             onDelete={() => void remove()}
             onClose={() => setSheet(null)}

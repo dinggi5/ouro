@@ -11,6 +11,8 @@
 //   · «이번 주·다음 주» 는 **월요일 시작**으로 센다 — 말로 하는 «이번 주 일요일» 은 다가오는 일요일이다.
 //     달력 칸(일요일 시작, `time.ts` startOfWeek)과 다르지만, 칸은 한국 달력 관례고 이건 한국어 말 관례다.
 //   · 반복(매주·매일)은 알아듣되 아직 못 만든다(RRULE 은 v0.2) — 첫 번 한 번만 넣고 카드에 그렇게 적는다.
+//   · **경고(`warnings`)가 하나라도 있으면 프론트는 바로 넣지 않고 시트를 연다**(코덱스 개발 3) — 없는 날짜를 빼고 남은
+//     시각, 거꾸로 쓴 범위의 시작만, 반복의 첫 번 — 전부 «사람이 쓴 것과 다른 일정» 이라 사람이 보고 저장해야 한다.
 //
 // 흐름: 글에서 조각(날짜·시각·길이·«N분 뒤»)을 뽑고 → 엮고(범위 «~», 오전/오후 물려받기) → 초안.
 // 조각을 뽑은 자리는 같은 바이트 수의 공백으로 가려 다음 규칙이 같은 글자를 두 번 먹지 않게 한다(위치가 안 어긋난다).
@@ -675,6 +677,7 @@ pub(crate) fn parse(text: &str, now: NaiveDateTime, base: Option<NaiveDate>) -> 
     // 날짜가 범위인데 시각이 하나뿐이면 어디에 붙일지 모른다 — 종일 범위로 두고 시각은 제목에 남긴다.
     if end_date.is_some() && start_time.is_some() && end_time.is_none() {
         start_time = None;
+        warnings.push("시각을 어느 날에 붙일지 몰라 종일로 두었어요".into());
     }
     // 주말에 시각이 붙으면 토요일 하루.
     if weekend && end_date.is_none() && start_time.is_none() {
@@ -979,6 +982,12 @@ mod tests {
         // 날짜는 맞고 시각만 틀리면 종일로 두고 알린다.
         let d = p("내일 25시 회의");
         assert_eq!((d.all_day, d.start_date.as_deref(), d.title.as_str(), d.miss), (true, Some("2026-09-30"), "25시 회의", Some(Miss::Invalid)));
+        // 날짜 범위 + 시각 하나 — 어느 날에 붙일지 모른다. 종일로 두되 경고해 바로 넣지 않게.
+        let d = p("10월 3일부터 5일까지 오후 3시 행사");
+        assert_eq!((d.all_day, d.title.as_str(), d.warnings.len()), (true, "오후 3시 행사", 1));
+        // 없는 날짜를 빼고 시각만 남아도 경고가 남는다(프론트가 시트로 연다).
+        let d = p("2026-02-30 3시 회의");
+        assert_eq!((d.miss, d.warnings.len()), (Some(Miss::Invalid), 1));
         let d = p("모레부터 내일까지 휴가");
         assert_eq!((d.start_date.as_deref(), d.end_date.as_deref()), (Some("2026-10-01"), Some("2026-10-01")));
         assert_eq!(d.warnings.len(), 1);

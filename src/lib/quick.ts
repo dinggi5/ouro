@@ -25,6 +25,11 @@ export const quickApi = {
   recordMiss: (kind: Miss) => invoke<void>("record_parse_miss", { kind }),
 };
 
+/** ↩ 로 바로 넣어도 되나 — 날짜를 알아들었고, 제목이 있고, 파서가 아무 경고도 안 했을 때만. */
+export function canDirect(q: QuickDraft): boolean {
+  return !!q.startDate && !!q.title && q.warnings.length === 0;
+}
+
 /** 초안 → 시트 값. 날짜를 못 찾았으면 `fallback`(고른 날의 빈 시트)에 제목만 얹는다 — 사람이 날짜를 고른다. */
 export function quickToDraft(q: QuickDraft, fallback: Draft): Draft {
   if (!q.startDate || !q.endDate) return { ...fallback, title: q.title };

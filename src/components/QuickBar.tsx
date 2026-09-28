@@ -5,7 +5,7 @@
 // 파싱은 글자마다 러스트에 묻는다(로컬이라 1ms 도 안 걸린다). 넣을 때는 마지막 글자까지 반영된 초안을 한 번 더 받는다.
 
 import { useEffect, useRef, useState } from "react";
-import { quickApi, whenLabel, type QuickDraft } from "../lib/quick";
+import { canDirect, quickApi, whenLabel, type QuickDraft } from "../lib/quick";
 
 export function QuickBar({
   inputRef,
@@ -57,7 +57,7 @@ export function QuickBar({
   };
 
   const when = draft ? whenLabel(draft, today) : null;
-  const direct = !!when && !!draft?.title;
+  const direct = !!draft && canDirect(draft);
 
   return (
     <div className="relative shrink-0 px-5 pt-2 pb-5">
@@ -79,7 +79,7 @@ export function QuickBar({
                 {w}
               </span>
             ))}
-            <span className="mt-1 text-micro text-ink-muted">{direct ? "↩ 넣기 · ⌘↩ 고쳐서 넣기" : "↩ 직접 고르기"}</span>
+            <span className="mt-1 text-micro text-ink-muted">{direct ? "↩ 넣기 · ⌘↩ 고쳐서 넣기" : "↩ 확인하고 넣기"}</span>
           </button>
         )}
       </div>
