@@ -1,0 +1,78 @@
+// 날짜 도우미 — 전부 **로컬 시간대**의 달력 날짜로 센다. 러스트 쪽(store.rs 의 date_window)도 같은 시간대를 쓴다.
+// 하루 더하기는 `setDate` 로 한다 — 24시간을 밀리초로 더하면 서머타임 날에 하루가 23·25시간이라 어긋난다.
+
+export function startOfDay(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+export function addDays(d: Date, n: number): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+}
+
+/** 한 주는 일요일부터(한국 달력의 관례). */
+export function startOfWeek(d: Date): Date {
+  return addDays(startOfDay(d), -d.getDay());
+}
+
+export function startOfMonth(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), 1);
+}
+
+/** 달을 옮긴다. 31일에서 한 달 뒤가 다다음 달 1일로 넘치지 않게 그 달 마지막 날로 자른다. */
+export function addMonths(d: Date, n: number): Date {
+  const first = new Date(d.getFullYear(), d.getMonth() + n, 1);
+  const last = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+  return new Date(first.getFullYear(), first.getMonth(), Math.min(d.getDate(), last));
+}
+
+export function sameDay(a: Date, b: Date): boolean {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+const pad = (n: number) => String(n).padStart(2, "0");
+
+/** 로컬 날짜 → `YYYY-MM-DD` (종일 일정의 저장 모양, `<input type="date">` 의 값). */
+export function ymd(d: Date): string {
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+export function parseYmd(s: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return ymd(d) === s ? d : null; // 2월 30일 같은 건 거른다
+}
+
+/** 로컬 시각 → `HH:MM` (`<input type="time">` 의 값). */
+export function hm(d: Date): string {
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** 날짜 `YYYY-MM-DD` + 시각 `HH:MM` → 로컬 Date. */
+export function combine(date: string, time: string): Date | null {
+  const d = parseYmd(date);
+  const t = /^(\d{2}):(\d{2})$/.exec(time);
+  if (!d || !t) return null;
+  d.setHours(Number(t[1]), Number(t[2]), 0, 0);
+  return d;
+}
+
+/** 다음 정각. 새 일정의 기본 시작 시각. */
+export function nextHour(now: Date): Date {
+  const d = new Date(now);
+  d.setHours(d.getHours() + 1, 0, 0, 0);
+  return d;
+}
+
+export const fmt = {
+  monthDay: new Intl.DateTimeFormat("ko-KR", { month: "long", day: "numeric" }),
+  weekday: new Intl.DateTimeFormat("ko-KR", { weekday: "long" }),
+  weekdayShort: new Intl.DateTimeFormat("ko-KR", { weekday: "short" }),
+  yearMonth: new Intl.DateTimeFormat("ko-KR", { year: "numeric", month: "long" }),
+  time: new Intl.DateTimeFormat("ko-KR", { hour: "numeric", minute: "2-digit" }),
+};
+
+/** 다음 자정까지 남은 ms. 팝오버는 며칠씩 떠 있을 수 있어 날짜가 스스로 넘어가야 한다. */
+export function msUntilMidnight(now: Date): number {
+  return addDays(startOfDay(now), 1).getTime() - now.getTime();
+}

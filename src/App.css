@@ -31,6 +31,8 @@
   --color-ink-secondary: var(--ink-secondary);
   --color-ink-muted: var(--ink-muted);
   --color-accent: var(--accent);
+  --color-black: #000000;
+  --color-white: #ffffff;
   --color-on-accent: #ffffff;
   --color-danger: #f04452;
   --color-success: #03b26c;
@@ -116,3 +118,64 @@ body {
 .num {
   font-variant-numeric: tabular-nums;
 }
+
+/* ---------------------------------------------------------------
+   모션 — 시트 320ms(레이아웃), 가림막·토스트 200ms. 이징은 전역 둘뿐.
+   줄인 모션 설정이면 전부 끈다(자리 이동 없이 바로 나타난다).
+--------------------------------------------------------------- */
+@keyframes sheet-in {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.sheet-in { animation: sheet-in 320ms var(--ease-out); }
+.scrim-in { animation: fade-in 200ms var(--ease-out); }
+.toast-in { animation: toast-in 200ms var(--ease-out); }
+@media (prefers-reduced-motion: reduce) {
+  .sheet-in, .scrim-in, .toast-in { animation: none; }
+}
+
+/* 스위치 — 체크박스를 그대로 쓰고 모양만 바꾼다(키보드·스크린리더가 공짜로 따라온다).
+   켜짐도 먹색이다 — 색은 AI 몫(DESIGN «액센트 = AI»). */
+.switch {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  width: 44px;
+  height: 26px;
+  margin: 0;
+  border-radius: 999px;
+  background: var(--hairline);
+  transition: background-color 200ms var(--ease-standard);
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: #ffffff;
+  transition: transform 200ms var(--ease-standard);
+}
+.switch:checked { background: var(--ink); }
+.switch:checked::after { transform: translateX(18px); background: var(--canvas); }
+.switch:focus-visible { outline: 2px solid var(--ink-secondary); outline-offset: 2px; }
+
+/* WebKit 날짜·시각 칸 — 기본 모양은 두고 글자색·여백만 토큰에 맞춘다. */
+input[type="date"],
+input[type="time"],
+select {
+  color-scheme: light dark;
+  font: inherit;
+}
+input::-webkit-datetime-edit-fields-wrapper { padding: 0; }
+select { appearance: none; -webkit-appearance: none; }

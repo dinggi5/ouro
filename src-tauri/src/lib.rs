@@ -1,11 +1,75 @@
 // Ouro 코어 — 선순환 캘린더. (한글 별칭: 우로우로)
 //
 // 모듈 지도:
-//   tray   메뉴바 상주 — 트레이 아이콘 + 팝오버 위치·자동 숨김 (Kura 에서 이식, 개발 1)
+//   tray    메뉴바 상주 — 트레이 아이콘 + 팝오버 위치·자동 숨김 (Kura 에서 이식, 개발 1)
+//   store   ~/.ouro/ouro.db — 일정·부탁·실행 (개발 2)
+//   alerts  일정 알림 + 매일 백업을 도는 시계 스레드 (개발 2)
 //
-// 이 파일에는 앱 셸만 둔다: 창 제어 커맨드 + run(). DB·스케줄러·소켓은 개발 2~ 에서 모듈로 붙는다.
+// 이 파일에는 앱 셸만 둔다: 커맨드(프론트가 부르는 문) + run(). 판단은 전부 모듈에 있다.
 
+mod alerts;
+mod store;
 mod tray;
+
+use std::sync::Arc;
+
+use store::{Event, EventInput, Store};
+use tauri::State;
+
+/// 앱 코어. DB 를 못 열었으면 Err 를 그대로 들고 산다 — 앱이 켜지다 죽으면 사용자는 «메뉴바에 아무것도 없다» 만 보지만,
+/// 이렇게 두면 팝오버가 뜨고 무엇이 잘못됐는지 한 줄로 보여 줄 수 있다.
+struct Core {
+    store: Arc<Store>,
+    alerts: alerts::Alerts,
+}
+
+type CoreState = Result<Core, String>;
+
+fn core<'a>(state: &'a State<'_, CoreState>) -> Result<&'a Core, String> {
+    state.inner().as_ref().map_err(Clone::clone)
+}
+
+fn open_core() -> CoreState {
+    let dir = store::data_dir().ok_or("홈 폴더를 찾지 못했어요")?;
+    let store = Arc::new(Store::open(&dir)?);
+    let alerts = alerts::start(store.clone(), dir.join("backup"));
+    Ok(Core { store, alerts })
+}
+
+/// 창 [from, to) (UTC ms) 에 걸치는 일정.
+#[tauri::command]
+fn list_events(state: State<'_, CoreState>, from: i64, to: i64) -> Result<Vec<Event>, String> {
+    core(&state)?.store.list_events(from, to)
+}
+
+#[tauri::command]
+fn create_event(state: State<'_, CoreState>, input: EventInput) -> Result<Event, String> {
+    let c = core(&state)?;
+    let e = c.store.create_event(&input)?;
+    c.alerts.poke();
+    Ok(e)
+}
+
+#[tauri::command]
+fn update_event(state: State<'_, CoreState>, id: i64, input: EventInput) -> Result<Event, String> {
+    let c = core(&state)?;
+    let e = c.store.update_event(id, &input)?;
+    c.alerts.poke();
+    Ok(e)
+}
+
+#[tauri::command]
+fn delete_event(state: State<'_, CoreState>, id: i64) -> Result<(), String> {
+    core(&state)?.store.delete_event(id)
+}
+
+#[tauri::command]
+fn restore_event(state: State<'_, CoreState>, id: i64) -> Result<Event, String> {
+    let c = core(&state)?;
+    let e = c.store.restore_event(id)?;
+    c.alerts.poke();
+    Ok(e)
+}
 
 /// ⌘W 로 팝오버를 닫는다. 창이 테두리 없음이라 ⌘W 가 러스트의 CloseRequested 까지 오지 않아
 /// 프론트가 직접 부른다(App.tsx). 종착지는 트레이 클릭과 같은 `tray::hide`.
@@ -18,6 +82,7 @@ fn hide_popover(app: tauri::AppHandle) {
 pub fn run() {
     tauri::Builder::default()
         .manage(tray::PopoverState::default())
+        .manage(open_core())
         .setup(|app| {
             // 도크 아이콘 없이 메뉴바에만 산다(tray.rs 머리 주석). 정본은 Info.plist 의 LSUIElement 다 —
             // 🔴 이 줄만으로 하면 앱이 Regular 로 켜졌다 Accessory 로 바뀌며 **비활성화**되고, 그 순간
@@ -42,7 +107,14 @@ pub fn run() {
             tauri::WindowEvent::Focused(false) => tray::on_blur(window),
             _ => {}
         })
-        .invoke_handler(tauri::generate_handler![hide_popover])
+        .invoke_handler(tauri::generate_handler![
+            hide_popover,
+            list_events,
+            create_event,
+            update_event,
+            delete_event,
+            restore_event
+        ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app, event| {
