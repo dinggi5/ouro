@@ -101,12 +101,18 @@ function App() {
     }
   }, [today]);
 
+  // 백업 경고는 따로 읽는다 — 이걸 못 읽었다고 일정 목록을 가리면 안 된다. 백업은 다른 스레드에서 자정·재시도로 돌므로
+  // 팝오버가 떠 있는 동안에도 1분마다(now 가 바뀔 때) 다시 본다(코덱스 개발 2 2차).
+  const nowMinute = Math.floor(now.getTime() / 60_000);
+  useEffect(() => {
+    api.backupError().then(setBackupError, () => {});
+  }, [nowMinute]);
+
   const [from, to] = useMemo(() => rangeOf(view, cursor), [view, cursor]);
   const reload = useCallback(async () => {
     try {
       setEvents(await api.list(from, to));
       setFatal(null);
-      setBackupError(await api.backupError());
     } catch (e) {
       setFatal(errorText(e));
     }
