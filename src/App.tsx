@@ -87,6 +87,7 @@ function App() {
   const [cursor, setCursor] = useState<Date>(today);
   const [events, setEvents] = useState<OuroEvent[]>([]);
   const [fatal, setFatal] = useState<string | null>(null);
+  const [backupError, setBackupError] = useState<string | null>(null);
   const [sheet, setSheet] = useState<Sheet | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
   const sheetKey = useRef(0);
@@ -105,6 +106,7 @@ function App() {
     try {
       setEvents(await api.list(from, to));
       setFatal(null);
+      setBackupError(await api.backupError());
     } catch (e) {
       setFatal(errorText(e));
     }
@@ -281,6 +283,12 @@ function App() {
           </>
         )}
       </section>
+
+      {backupError && (
+        <p role="alert" className="shrink-0 truncate px-5 pb-4 text-micro text-danger" title={backupError}>
+          {backupError}
+        </p>
+      )}
 
       {sheet && (
         <>

@@ -269,7 +269,7 @@ impl Store {
         create_private_dir(dir)?;
         let path = dir.join("ouro.db");
         let conn = Connection::open(&path).map_err(|e| format!("DB 열기 실패: {e}"))?;
-        restrict_file(&path);
+        restrict_file(&path)?;
         Self::init(conn)
     }
 
@@ -440,6 +440,14 @@ impl Store {
         Ok(n == 1)
     }
 
+    /// 띄우기에 실패한 알림의 «띄움» 기록을 지운다 — 늦은 알림 창(10분) 안에서 다음 바퀴가 다시 시도한다.
+    pub(crate) fn unmark_alert_sent(&self, item_id: i64, fire_at: i64) {
+        let _ = self.conn().execute(
+            "DELETE FROM alerts_sent WHERE item_id = ?1 AND fire_at = ?2",
+            params![item_id, fire_at],
+        );
+    }
+
     /// `dest` 로 스냅숏. VACUUM INTO 는 WAL 에 걸린 쓰기까지 담은 **한 파일짜리 온전한 DB** 를 만든다
     /// (DB 파일만 복사하면 -wal 에 남은 최근 쓰기가 빠진다).
     pub(crate) fn snapshot_to(&self, dest: &Path) -> Result<(), String> {
@@ -490,17 +498,21 @@ pub(crate) fn create_private_dir(dir: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        // 못 잠그면 열지 않는다 — «남이 못 읽는다» 를 보장 못 한 채 일정을 쓰게 두지 않는다(코덱스 개발 2).
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("{} 권한 설정 실패: {e}", dir.display()))?;
     }
     Ok(())
 }
 
-pub(crate) fn restrict_file(path: &Path) {
+pub(crate) fn restrict_file(path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("{} 권한 설정 실패: {e}", path.display()))?;
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -626,6 +638,8 @@ mod tests {
         let t = now_ms() + 5;
         assert!(s.mark_alert_sent(e.id, t).unwrap());
         assert!(!s.mark_alert_sent(e.id, t).unwrap());
+        s.unmark_alert_sent(e.id, t);
+        assert!(s.mark_alert_sent(e.id, t).unwrap(), "실패로 되돌린 알림은 다시 걸린다");
     }
 
     #[test]

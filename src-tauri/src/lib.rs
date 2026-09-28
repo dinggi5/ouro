@@ -63,6 +63,12 @@ fn delete_event(state: State<'_, CoreState>, id: i64) -> Result<(), String> {
     core(&state)?.store.delete_event(id)
 }
 
+/// 팝오버 아래에 띄울 경고 — 지금은 백업 실패 하나. 없으면 None.
+#[tauri::command]
+fn backup_error(state: State<'_, CoreState>) -> Result<Option<String>, String> {
+    Ok(core(&state)?.alerts.backup_error())
+}
+
 #[tauri::command]
 fn restore_event(state: State<'_, CoreState>, id: i64) -> Result<Event, String> {
     let c = core(&state)?;
@@ -113,7 +119,8 @@ pub fn run() {
             create_event,
             update_event,
             delete_event,
-            restore_event
+            restore_event,
+            backup_error
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

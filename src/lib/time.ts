@@ -48,12 +48,16 @@ export function hm(d: Date): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** 날짜 `YYYY-MM-DD` + 시각 `HH:MM` → 로컬 Date. */
+/** 날짜 `YYYY-MM-DD` + 시각 `HH:MM` → 로컬 Date.
+ *  서머타임이 시작되는 날의 없는 시각(예: 뉴욕 3월 둘째 일요일 02:30)은 JS 가 조용히 03:30 으로 밀어 버린다 —
+ *  사람이 본 시각과 저장된 시각이 달라지므로 null 로 돌려 칸을 고치게 한다(코덱스 개발 2). */
 export function combine(date: string, time: string): Date | null {
   const d = parseYmd(date);
   const t = /^(\d{2}):(\d{2})$/.exec(time);
   if (!d || !t) return null;
-  d.setHours(Number(t[1]), Number(t[2]), 0, 0);
+  const [h, m] = [Number(t[1]), Number(t[2])];
+  d.setHours(h, m, 0, 0);
+  if (d.getHours() !== h || d.getMinutes() !== m || ymd(d) !== date) return null;
   return d;
 }
 

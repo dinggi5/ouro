@@ -13,7 +13,7 @@
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{Local, NaiveDate, TimeZone, Timelike, Utc};
@@ -30,11 +30,18 @@ const BACKUP_KEEP: usize = 7;
 /// 스케줄러 손잡이 — 일정이 바뀌면 `poke`.
 pub(crate) struct Alerts {
     tx: Sender<()>,
+    /// 마지막 백업 실패 문장. 성공하면 비운다. 팝오버가 읽어 한 줄로 보인다 —
+    /// DB 가 유일한 원본이라(PLAN §6) 백업이 며칠 조용히 멈춰 있으면 안 된다(코덱스 개발 2).
+    backup_error: Arc<Mutex<Option<String>>>,
 }
 
 impl Alerts {
     pub(crate) fn poke(&self) {
         let _ = self.tx.send(());
+    }
+
+    pub(crate) fn backup_error(&self) -> Option<String> {
+        self.backup_error.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 }
 
@@ -109,7 +116,8 @@ fn notice(e: &Event, now: i64) -> (String, String) {
     (e.title.clone(), body)
 }
 
-fn show_notification(title: &str, body: &str) {
+/// 알림을 띄운다. 실패하면(osascript 를 못 띄우거나 오류로 끝나면) `on_fail` — 끝나길 기다리는 스레드에서 부른다.
+fn show_notification(title: &str, body: &str, on_fail: impl FnOnce() + Send + 'static) {
     // AppleScript 문자열 리터럴 이스케이프 — 제목은 사용자(앞으로는 MCP·가져오기)가 쓴 글이라 스크립트 주입을 막는다.
     let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
     let script = format!(
@@ -118,13 +126,20 @@ fn show_notification(title: &str, body: &str) {
         esc(title)
     );
     match std::process::Command::new("osascript").arg("-e").arg(script).spawn() {
-        // 끝나길 기다리는 스레드 — 좀비 프로세스를 남기지 않는다.
+        // 끝나길 기다리는 스레드 — 좀비 프로세스를 남기지 않고, 실패를 되돌린다.
         Ok(mut child) => {
-            std::thread::spawn(move || {
-                let _ = child.wait();
+            std::thread::spawn(move || match child.wait() {
+                Ok(st) if st.success() => {}
+                other => {
+                    eprintln!("알림 실패: {other:?}");
+                    on_fail();
+                }
             });
         }
-        Err(e) => eprintln!("알림 실패: {e}"),
+        Err(e) => {
+            eprintln!("알림 실패: {e}");
+            on_fail();
+        }
     }
 }
 
@@ -144,7 +159,7 @@ pub(crate) fn backup_daily(store: &Store, dir: &std::path::Path, today: NaiveDat
     let tmp = dir.join(format!(".{}.tmp", backup_name(today)));
     let _ = std::fs::remove_file(&tmp); // VACUUM INTO 는 이미 있는 파일에 못 쓴다
     store.snapshot_to(&tmp)?;
-    store::restrict_file(&tmp);
+    store::restrict_file(&tmp)?;
     std::fs::rename(&tmp, &dest).map_err(|e| format!("백업 이름 바꾸기 실패: {e}"))?;
     prune_backups(dir);
     Ok(())
@@ -166,6 +181,8 @@ fn prune_backups(dir: &std::path::Path) {
 /// 시계 스레드를 띄운다.
 pub(crate) fn start(store: Arc<Store>, backup_dir: PathBuf) -> Alerts {
     let (tx, rx) = mpsc::channel::<()>();
+    let backup_error = Arc::new(Mutex::new(None));
+    let backup_err = backup_error.clone();
     std::thread::Builder::new()
         .name("ouro-alerts".into())
         .spawn(move || {
@@ -175,11 +192,12 @@ pub(crate) fn start(store: Arc<Store>, backup_dir: PathBuf) -> Alerts {
 
                 let today = Local::now().date_naive();
                 if backed_up != Some(today) {
-                    match backup_daily(&store, &backup_dir, today) {
-                        Ok(()) => backed_up = Some(today),
-                        // 실패하면 다음 바퀴에 다시 — 디스크가 잠깐 찼을 수 있다.
-                        Err(e) => eprintln!("{e}"),
+                    let res = backup_daily(&store, &backup_dir, today);
+                    if res.is_ok() {
+                        backed_up = Some(today);
                     }
+                    // 실패하면 다음 바퀴에 다시 — 디스크가 잠깐 찼을 수 있다.
+                    *backup_err.lock().unwrap_or_else(|p| p.into_inner()) = res.err().map(|e| format!("오늘 백업을 못 했어요 — {e}"));
                 }
 
                 let events = store
@@ -192,7 +210,8 @@ pub(crate) fn start(store: Arc<Store>, backup_dir: PathBuf) -> Alerts {
                     // 먼저 적고 띄운다 — 적기에 실패하면 띄우지 않는다(같은 알림이 30초마다 반복되는 것보다 낫다).
                     if let Ok(true) = store.mark_alert_sent(e.id, f) {
                         let (title, body) = notice(e, now);
-                        show_notification(&title, &body);
+                        let (st, id) = (store.clone(), e.id);
+                        show_notification(&title, &body, move || st.unmark_alert_sent(id, f));
                     }
                 }
 
@@ -206,7 +225,7 @@ pub(crate) fn start(store: Arc<Store>, backup_dir: PathBuf) -> Alerts {
             }
         })
         .expect("알림 스레드를 띄우지 못했어요");
-    Alerts { tx }
+    Alerts { tx, backup_error }
 }
 
 #[cfg(test)]

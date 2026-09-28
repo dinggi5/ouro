@@ -45,6 +45,7 @@ export const api = {
   update: (id: number, input: EventInput) => invoke<OuroEvent>("update_event", { id, input }),
   remove: (id: number) => invoke<void>("delete_event", { id }),
   restore: (id: number) => invoke<OuroEvent>("restore_event", { id }),
+  backupError: () => invoke<string | null>("backup_error"),
 };
 
 /** 이 일정이 로컬 날짜 `day` 에 걸치나. 러스트 list_events 의 겹침 규칙과 같다(길이 0 인 일정은 그 순간이 속한 날). */

@@ -87,7 +87,8 @@ function toInput(d: Draft): EventInput | string {
   }
   const s = combine(d.startDate, d.startTime);
   const e = combine(d.endDate, d.endTime);
-  if (!s || !e) return "날짜와 시각을 확인해 주세요";
+  // 모양이 맞는데 null 이면 서머타임으로 건너뛰는 시각이다(time.ts combine).
+  if (!s || !e) return "없는 시각이에요 — 날짜와 시각을 확인해 주세요";
   if (e < s) return "끝나는 시각이 시작보다 앞이에요";
   return {
     title: d.title,
