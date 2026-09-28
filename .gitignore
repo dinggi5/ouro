@@ -27,9 +27,6 @@ src-tauri/gen/schemas/
 .idea/
 .vscode/
 
-# --- 개발 일지 — 로컬 전용(사장, 개발 2). 개인 운영 기록이라 공개 리포에 싣지 않는다(Kura 개발 29 와 같은 결정) ---
-DEVLOG.md
-
 # --- AI 코딩 에이전트 로컬 파일 ---
 .claude/
 .codex/
