@@ -9,4 +9,5 @@
 - MCP 사이드카는 DB 를 직접 열지 않는다 — 소켓으로 앱에 묻는다(쓰는 곳은 앱 하나).
 - 불변 규칙: 바깥에서 들어온 글(.ics·AI 답)은 부탁 문장이 될 수 없다 / AI 가 만든 부탁은 사람 승인 전엔 안 돈다 / 바깥으로 나간 원문은 저장한다.
 - 날짜 계산은 LLM 이 아니라 결정적 파서가 한다.
-- 원격 둘: `origin` = 비공개 백업(`DEVLOG.md` 포함, 세션 끝에 푸시), 공개 오픈소스는 `scripts/publish-public.sh`(일지를 이력에서 걸러 `public` 에).
+- 원격: `backup` = 비공개 `dinggi5/ouro-dev`(`DEVLOG.md` 포함, 세션 끝에 `git push backup main`). `origin` 이라는 이름은 쓰지 않는다(사이드바 묶음 이름이 바뀐다).
+  공개 오픈소스는 **배포(개발 8) 때부터** — `scripts/publish-public.sh` 가 일지를 이력에서 걸러 `public` 원격에 올린다.

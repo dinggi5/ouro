@@ -2,10 +2,13 @@
 # 공개 저장소로 내보내기 — 개발 일지(DEVLOG.md)를 **이력 전체에서** 뺀 main 을 `public` 원격에 올린다.
 #
 # 저장소가 둘이다(사장, 개발 2):
-#   origin  = 비공개 백업. 일지까지 전부. 세션마다 여기로 푸시한다.
-#   public  = 공개 오픈소스(MIT). 일지는 개인 운영 기록이라 싣지 않는다.
+#   backup  = 비공개 백업(dinggi5/ouro-dev). 일지까지 전부. 세션마다 여기로 푸시한다.
+#   public  = 공개 오픈소스(MIT). 일지는 개인 운영 기록이라 싣지 않는다. **배포(개발 8) 때 만든다**(사장).
 #
-# 매번 origin/main 을 새로 복제해 같은 필터를 돌린다. filter-branch 는 작성자·날짜를 그대로 두므로
+# 원격 이름을 origin 으로 두지 않는 이유: Claude 데스크톱 사이드바가 origin 의 저장소 이름으로 세션을 묶어서,
+# 우로우로 채팅이 전부 «ouro-dev» 밑으로 옮겨 갔다(개발 2).
+#
+# 매번 backup/main 을 새로 복제해 같은 필터를 돌린다. filter-branch 는 작성자·날짜를 그대로 두므로
 # **같은 입력이면 같은 커밋 해시**가 나온다 → 공개 쪽은 매번 빨리감기(fast-forward)로 이어진다.
 # 그래서 강제 푸시를 쓰지 않는다: 해시가 어긋나 빨리감기가 안 되면 멈추고 사람이 본다.
 #
@@ -19,7 +22,7 @@ if [[ -z "$PUBLIC_URL" ]]; then
   echo "public 원격이 없어요: git remote add public https://github.com/dinggi5/ouro.git" >&2
   exit 1
 fi
-ORIGIN_URL="$(git remote get-url origin)"
+ORIGIN_URL="$(git remote get-url backup)"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
