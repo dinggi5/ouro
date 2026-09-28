@@ -1,7 +1,7 @@
 // 일정 만들기·고치기 시트. 팝오버 아래에서 올라온다(320ms, 애플 레이아웃 속도).
 //
 // 날짜·시각 칸은 WebKit 기본 `<input type="date|time">` 을 쓴다 — 키보드로 칸마다 숫자를 넣을 수 있고, 시스템 로캘을 따른다.
-// 자연어 한 줄 입력(「내일 3시 치과」)은 개발 3 의 규칙 파서가 이 시트 앞에 붙는다.
+// 자연어 한 줄 입력(「내일 3시 치과」)은 팝오버 아래 `QuickBar` — 날짜를 못 알아들었거나 ⌘↩ 면 그 초안으로 이 시트가 열린다.
 //
 // 종일 일정의 끝 날짜는 화면에선 **포함**(9/28 ~ 9/28 = 하루), 저장은 **배타**(end = 9/29). 바꾸는 곳은 toInput·fromEvent 두 곳뿐.
 
@@ -305,5 +305,5 @@ export function EventSheet({
   );
 }
 
-export { fromEvent };
+export { fromEvent, toInput };
 export type { Draft };

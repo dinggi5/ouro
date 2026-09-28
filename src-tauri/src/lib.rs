@@ -4,15 +4,18 @@
 //   tray    메뉴바 상주 — 트레이 아이콘 + 팝오버 위치·자동 숨김 (Kura 에서 이식, 개발 1)
 //   store   ~/.ouro/ouro.db — 일정·부탁·실행 (개발 2)
 //   alerts  일정 알림 + 매일 백업을 도는 시계 스레드 (개발 2)
+//   parse   빠른 입력 규칙 파서 «내일 3시 치과» → 초안 (개발 3)
 //
 // 이 파일에는 앱 셸만 둔다: 커맨드(프론트가 부르는 문) + run(). 판단은 전부 모듈에 있다.
 
 mod alerts;
+mod parse;
 mod store;
 mod tray;
 
 use std::sync::Arc;
 
+use parse::{Draft, Engine, Miss};
 use store::{Event, EventInput, Store};
 use tauri::State;
 
@@ -61,6 +64,21 @@ fn update_event(state: State<'_, CoreState>, id: i64, input: EventInput) -> Resu
 #[tauri::command]
 fn delete_event(state: State<'_, CoreState>, id: i64) -> Result<(), String> {
     core(&state)?.store.delete_event(id)
+}
+
+/// 빠른 입력 한 줄 → 초안. 저장하지 않는다(프론트가 카드로 보여 주고, 확정하면 `create_event` 로 온다).
+/// `base` = 사람이 보고 있는 날 `YYYY-MM-DD`(오늘이 아니면) — 날짜 없는 «3시 치과» 가 그날로 간다.
+/// DB 를 못 열었어도 돈다(파싱은 저장소와 무관).
+#[tauri::command]
+fn parse_quick(text: String, base: Option<String>) -> Draft {
+    let base = base.and_then(|b| chrono::NaiveDate::parse_from_str(&b, "%Y-%m-%d").ok());
+    parse::Rules.parse(&text, chrono::Local::now().naive_local(), base)
+}
+
+/// 못 알아들은 입력을 확정했을 때 유형 하나를 센다(PLAN §7 — 본문은 안 남긴다).
+#[tauri::command]
+fn record_parse_miss(state: State<'_, CoreState>, kind: Miss) -> Result<(), String> {
+    core(&state)?.store.record_parse_miss(kind.key())
 }
 
 /// 팝오버 아래에 띄울 경고 — 지금은 백업 실패 하나. 없으면 None.
@@ -120,7 +138,9 @@ pub fn run() {
             update_event,
             delete_event,
             restore_event,
-            backup_error
+            backup_error,
+            parse_quick,
+            record_parse_miss
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

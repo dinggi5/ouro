@@ -1,4 +1,4 @@
-// 앱 루트 — 오늘/주/월 세 보기 + 일정 시트 + 되돌리기 토스트.
+// 앱 루트 — 오늘/주/월 세 보기 + 일정 시트 + 빠른 입력 + 되돌리기 토스트.
 //
 // 상태는 둘뿐이다: 보기(view) 와 커서(cursor, 고른 날). 세 보기가 같은 커서를 공유해서, 월에서 고른 날로
 // «오늘» 탭을 누르면 그날 목록이 뜬다. 일정은 보기마다 필요한 창만 러스트에서 불러온다 — 캐시를 두지 않는다
@@ -9,8 +9,10 @@ import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import { DayList } from "./components/DayList";
 import { MonthGrid, monthGridRange } from "./components/MonthGrid";
-import { blankDraft, EventSheet, fromEvent, type Draft } from "./components/EventSheet";
+import { blankDraft, EventSheet, fromEvent, toInput, type Draft } from "./components/EventSheet";
+import { QuickBar } from "./components/QuickBar";
 import { api, errorText, eventsOn, type EventInput, type OuroEvent } from "./lib/events";
+import { quickApi, quickToDraft, type QuickDraft } from "./lib/quick";
 import {
   addDays,
   addMonths,
@@ -20,6 +22,7 @@ import {
   sameDay,
   startOfDay,
   startOfWeek,
+  ymd,
 } from "./lib/time";
 
 type View = "day" | "week" | "month";
@@ -77,7 +80,8 @@ function title(view: View, cursor: Date): { main: string; sub: string } {
   return { main: fmt.yearMonth.format(cursor), sub: `${fmt.monthDay.format(cursor)} ${fmt.weekday.format(cursor)}` };
 }
 
-type Sheet = { draft: Draft; editing: OuroEvent | null; key: number };
+/** fromQuick = 빠른 입력에서 열린 시트 — 저장하면 입력칸을 비운다(취소하면 친 글이 남는다). */
+type Sheet = { draft: Draft; editing: OuroEvent | null; key: number; fromQuick?: boolean };
 type Toast = { text: string; undo?: () => void; key: number };
 
 function App() {
@@ -91,6 +95,8 @@ function App() {
   const [sheet, setSheet] = useState<Sheet | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
   const sheetKey = useRef(0);
+  const [quickText, setQuickText] = useState("");
+  const quickRef = useRef<HTMLInputElement>(null);
 
   // 자정이 지나면 «오늘» 에 머물던 커서도 따라 넘어간다. 다른 날을 보고 있었다면 그대로 둔다.
   const lastToday = useRef(today);
@@ -135,22 +141,53 @@ function App() {
     return () => window.clearTimeout(t);
   }, [toast]);
 
-  const openNew = useCallback(() => {
-    setSheet({ draft: blankDraft(cursor, new Date()), editing: null, key: ++sheetKey.current });
-  }, [cursor]);
   const openEdit = (e: OuroEvent) => setSheet({ draft: fromEvent(e), editing: e, key: ++sheetKey.current });
+
+  /** 만든 날로 커서를 옮긴다 — 다른 날에 만들었는데 목록에 안 보이면 «저장이 안 됐나» 한다. */
+  const reveal = (saved: OuroEvent) => {
+    const day = saved.allDay ? parseYmd(saved.startDate ?? "") : new Date(saved.startAt ?? 0);
+    if (day && !sameDay(day, cursor)) setCursor(startOfDay(day));
+  };
 
   const save = async (input: EventInput): Promise<string | null> => {
     try {
       const saved = sheet?.editing ? await api.update(sheet.editing.id, input) : await api.create(input);
+      if (sheet?.fromQuick) setQuickText("");
       setSheet(null);
-      // 만든 날로 커서를 옮긴다 — 다른 날에 만들었는데 목록에 안 보이면 «저장이 안 됐나» 한다.
-      const day = saved.allDay ? parseYmd(saved.startDate ?? "") : new Date(saved.startAt ?? 0);
-      if (!sheet?.editing && day && !sameDay(day, cursor)) setCursor(startOfDay(day));
+      if (!sheet?.editing) reveal(saved);
       await reload();
       return null;
     } catch (e) {
       return errorText(e);
+    }
+  };
+
+  /** 빠른 입력 확정. 날짜를 알아들었고 모양이 맞으면 바로 넣고, 아니면(또는 ⌘↩) 그 초안으로 시트를 연다. */
+  const quickCommit = async (q: QuickDraft, detail: boolean) => {
+    if (q.miss) quickApi.recordMiss(q.miss).catch(() => {});
+    const draft = quickToDraft(q, blankDraft(cursor, new Date()));
+    // 날짜를 못 찾았으면 fallback(고른 날 9시)이 채워져 있어도 바로 넣지 않는다 — 그건 추측이다. 시트에서 사람이 본다.
+    const input = detail || !q.startDate ? null : toInput(draft);
+    if (!input || typeof input === "string") {
+      setSheet({ draft, editing: null, key: ++sheetKey.current, fromQuick: true });
+      return;
+    }
+    try {
+      const saved = await api.create(input);
+      setQuickText("");
+      reveal(saved);
+      await reload();
+      showToast("넣었어요", async () => {
+        setToast(null);
+        try {
+          await api.remove(saved.id);
+          await reload();
+        } catch (err) {
+          showToast(errorText(err));
+        }
+      });
+    } catch (e) {
+      showToast(errorText(e));
     }
   };
 
@@ -182,7 +219,7 @@ function App() {
     [view],
   );
 
-  // 키보드: ⌘W 닫기(창이 무테라 AppKit 이 안 준다, Kura 개발 58), ⌘N 새 일정, Esc 시트 닫기, ←/→ 넘기기, T 오늘.
+  // 키보드: ⌘W 닫기(창이 무테라 AppKit 이 안 준다, Kura 개발 58), ⌘N 빠른 입력으로, Esc 시트 닫기, ←/→ 넘기기, T 오늘.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const typing = e.target instanceof HTMLElement && e.target.closest("input, textarea, select");
@@ -193,7 +230,7 @@ function App() {
           void invoke("hide_popover");
         } else if (k === "n" && !sheet) {
           e.preventDefault();
-          openNew();
+          quickRef.current?.focus();
         }
         return;
       }
@@ -209,7 +246,7 @@ function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [sheet, openNew, step, today]);
+  }, [sheet, step, today]);
 
   const t = title(view, cursor);
   const atToday = sameDay(cursor, today);
@@ -239,9 +276,6 @@ function App() {
             <IconButton label="다음" onClick={() => step(1)}>
               <path d="M6 3.5 10.5 8 6 12.5" />
             </IconButton>
-            <IconButton label="새 일정" onClick={openNew}>
-              <path d="M8 3v10M3 8h10" />
-            </IconButton>
           </div>
         </div>
 
@@ -267,7 +301,7 @@ function App() {
         {fatal ? (
           <Empty text={fatal} />
         ) : view === "day" ? (
-          <DayBody day={cursor} events={events} now={nowMs} onOpen={openEdit} onNew={openNew} />
+          <DayBody day={cursor} events={events} now={nowMs} onOpen={openEdit} />
         ) : view === "week" ? (
           <WeekBody
             cursor={cursor}
@@ -284,17 +318,31 @@ function App() {
           <>
             <MonthGrid cursor={cursor} today={today} events={events} onPick={setCursor} />
             <div className="mt-4">
-              <DayBody day={cursor} events={events} now={nowMs} onOpen={openEdit} onNew={openNew} />
+              <DayBody day={cursor} events={events} now={nowMs} onOpen={openEdit} />
             </div>
           </>
         )}
       </section>
 
       {backupError && (
-        <p role="alert" className="shrink-0 truncate px-5 pb-4 text-micro text-danger" title={backupError}>
+        <p role="alert" className="shrink-0 truncate px-5 pt-2 text-micro text-danger" title={backupError}>
           {backupError}
         </p>
       )}
+
+      <QuickBar
+        inputRef={quickRef}
+        text={quickText}
+        onText={(t) => {
+          setQuickText(t);
+          // 다음 것을 치기 시작하면 «넣었어요» 토스트는 걷는다 — 새 카드를 가린다(되돌리기는 일정을 눌러 지우면 된다).
+          if (t) setToast(null);
+        }}
+        // 하루·월 보기에서 오늘이 아닌 날을 보고 있으면 날짜 없는 입력은 그날로(주 보기엔 «고른 날» 이 안 보여 오늘 기준).
+        base={view !== "week" && !atToday ? ymd(cursor) : null}
+        today={today}
+        onCommit={quickCommit}
+      />
 
       {sheet && (
         <>
@@ -314,7 +362,7 @@ function App() {
         <div
           key={toast.key}
           role="status"
-          className="toast-in absolute inset-x-0 bottom-5 mx-auto flex w-fit items-center gap-4 rounded-pill bg-[rgba(25,31,40,0.92)] px-5 py-3 text-body-sm text-white"
+          className="toast-in absolute inset-x-0 bottom-20 mx-auto flex w-fit items-center gap-4 rounded-pill bg-[rgba(25,31,40,0.92)] px-5 py-3 text-body-sm text-white"
         >
           <span>{toast.text}</span>
           {toast.undo && (
@@ -344,26 +392,13 @@ function IconButton({ label, onClick, children }: { label: string; onClick: () =
   );
 }
 
-function Empty({ text, action }: { text: string; action?: { label: string; onClick: () => void } }) {
-  return (
-    <div className="flex flex-col items-center gap-3 py-12">
-      <p className="text-body-sm text-ink-muted">{text}</p>
-      {action && (
-        <button
-          type="button"
-          onClick={action.onClick}
-          className="h-9 rounded-pill bg-surface-sunken px-4 text-label text-ink-secondary transition-colors duration-100 active:bg-hairline"
-        >
-          {action.label}
-        </button>
-      )}
-    </div>
-  );
+function Empty({ text }: { text: string }) {
+  return <p className="py-12 text-center text-body-sm text-ink-muted">{text}</p>;
 }
 
-function DayBody(props: { day: Date; events: OuroEvent[]; now: number; onOpen: (e: OuroEvent) => void; onNew: () => void }) {
+function DayBody(props: { day: Date; events: OuroEvent[]; now: number; onOpen: (e: OuroEvent) => void }) {
   const list = eventsOn(props.events, props.day);
-  if (list.length === 0) return <Empty text="비어 있어요" action={{ label: "일정 만들기", onClick: props.onNew }} />;
+  if (list.length === 0) return <Empty text="비어 있어요" />;
   return <DayList day={props.day} events={list} now={props.now} onOpen={props.onOpen} />;
 }
 

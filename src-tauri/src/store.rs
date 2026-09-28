@@ -212,6 +212,15 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (item_id, fire_at)
     );
     ",
+    // 2 — 개발 3: 빠른 입력이 못 알아들은 횟수(유형별 개수만, 글은 저장하지 않는다 — PLAN §7).
+    //     로컬 모델을 붙일지 사장이 판단할 때 보는 숫자다.
+    "
+    CREATE TABLE parse_misses (
+        kind    TEXT    PRIMARY KEY,
+        count   INTEGER NOT NULL DEFAULT 0,
+        last_at INTEGER NOT NULL
+    );
+    ",
 ];
 
 pub(crate) struct Store {
@@ -448,6 +457,18 @@ impl Store {
         );
     }
 
+    /// 빠른 입력이 못 알아들은 것을 하나 센다(유형만). 종류는 `parse::Miss` 가 정한다.
+    pub(crate) fn record_parse_miss(&self, kind: &str) -> Result<(), String> {
+        self.conn()
+            .execute(
+                "INSERT INTO parse_misses (kind, count, last_at) VALUES (?1, 1, ?2)
+                 ON CONFLICT (kind) DO UPDATE SET count = count + 1, last_at = excluded.last_at",
+                params![kind, now_ms()],
+            )
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
     /// `dest` 로 스냅숏. VACUUM INTO 는 WAL 에 걸린 쓰기까지 담은 **한 파일짜리 온전한 DB** 를 만든다
     /// (DB 파일만 복사하면 -wal 에 남은 최근 쓰기가 빠진다).
     pub(crate) fn snapshot_to(&self, dest: &Path) -> Result<(), String> {
@@ -653,6 +674,39 @@ mod tests {
         s.conn().execute_batch("PRAGMA user_version = 99").unwrap();
         drop(s);
         assert!(Store::open(dir.path()).is_err());
+    }
+
+    #[test]
+    fn upgrades_schema_1_db_keeping_events() {
+        // 개발 2 사용자의 DB(스키마 1)가 개발 3 앱에서 열리는 길.
+        let dir = tempfile::tempdir().unwrap();
+        let conn = Connection::open(dir.path().join("ouro.db")).unwrap();
+        conn.execute_batch(&format!("{}; PRAGMA user_version = 1;", MIGRATIONS[0])).unwrap();
+        conn.execute(
+            "INSERT INTO items (kind, title, all_day, start_at, end_at, tz, created_at, updated_at)
+             VALUES ('event', '옛 일정', 0, 0, 1, 'Asia/Seoul', 0, 0)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let s = Store::open(dir.path()).unwrap();
+        let v: i64 = s.conn().query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, MIGRATIONS.len() as i64);
+        assert_eq!(s.list_events(0, 10).unwrap()[0].title, "옛 일정");
+        s.record_parse_miss("no_date").unwrap();
+    }
+
+    #[test]
+    fn parse_misses_count_by_kind() {
+        let s = Store::open_in_memory();
+        s.record_parse_miss("no_date").unwrap();
+        s.record_parse_miss("no_date").unwrap();
+        s.record_parse_miss("repeat").unwrap();
+        let n: i64 = s
+            .conn()
+            .query_row("SELECT count FROM parse_misses WHERE kind = 'no_date'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2);
     }
 
     #[test]
