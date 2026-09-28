@@ -26,8 +26,8 @@ trap 'rm -rf "$WORK"' EXIT
 
 git clone --quiet --single-branch --branch main "$ORIGIN_URL" "$WORK/repo"
 cd "$WORK/repo"
-FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch --quiet --prune-empty \
-  --index-filter 'git rm --cached --ignore-unmatch --quiet DEVLOG.md' -- main >/dev/null
+FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch --prune-empty \
+  --index-filter 'git rm --cached --ignore-unmatch --quiet DEVLOG.md' -- main >/dev/null 2>&1
 
 # 마지막 확인 — 어느 커밋에도 일지가 남아 있으면 안 된다.
 if git log --all --format=%H -- DEVLOG.md | grep -q .; then
