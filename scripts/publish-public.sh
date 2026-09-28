@@ -29,8 +29,10 @@ cd "$WORK/repo"
 FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch --prune-empty \
   --index-filter 'git rm --cached --ignore-unmatch --quiet DEVLOG.md' -- main >/dev/null 2>&1
 
-# 마지막 확인 — 어느 커밋에도 일지가 남아 있으면 안 된다.
-if git log --all --format=%H -- DEVLOG.md | grep -q .; then
+# 마지막 확인 — 올라갈 main 의 어느 커밋에도 일지가 남아 있으면 안 된다.
+# (`--all` 은 안 된다: filter-branch 가 옛 이력을 refs/original 에 남긴다. `| grep -q` 도 안 된다:
+#  pipefail 아래서 grep 이 먼저 끝나면 git log 가 SIGPIPE 로 실패해 검사가 조용히 통과한다 — 실측.)
+if [[ -n "$(git log main --format=%H -- DEVLOG.md)" ]]; then
   echo "🔴 걸러 낸 이력에 DEVLOG.md 가 남았어요. 올리지 않습니다." >&2
   exit 1
 fi
