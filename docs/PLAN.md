@@ -145,7 +145,7 @@ MCP 명세 <https://modelcontextprotocol.io/specification>, iCalendar RRULE RFC 
 | `get_agenda(from, to)` | 일정 목록(캘린더 선택 존중) | 없음 |
 | `find_free_time(duration, range)` | 빈 시간 | 없음 |
 | `list_errands` / `get_run(id)` | 부탁·답 읽기 | 없음 |
-| `propose_event(...)` | 일정 제안 → 팝오버에 카드 | **사람 한 번 클릭** |
+| `propose_event(...)` | 일정 제안 → 팝오버에 카드. **개발 4 로 앞당김**(개발 3, 사장 — 복잡한 자연어는 규칙 파서 대신 AI 가 맡는다) | **사람 한 번 클릭** |
 | `propose_errand(...)` | 부탁 제안 | **사람 승인 + 보낼 원문 표시** |
 | `update/delete_event` | v0.2 이후. 삭제는 항상 승인 | 승인 |
 
@@ -187,7 +187,7 @@ MCP 명세 <https://modelcontextprotocol.io/specification>, iCalendar RRULE RFC 
 | 1 | 스캐폴드: Tauri 팝오버 + 토큰 + 빈 화면, Kura `tray.rs` 이식 | 메뉴바 클릭 → 팝오버 |
 | 2 | SQLite 스키마(일정·부탁·실행) + 일정 CRUD + 오늘/주/월 뷰 + 알림 + 백업 | 팝오버에서 일정을 만들고 고치고 지운다, 재시작해도 남는다 |
 | 3 | 규칙 날짜 파서 + 빠른 입력 → 일정 쓰기 | 한국어 상대날짜 테스트 50개 통과 |
-| 4 | `ouro-mcp` 읽기 도구 + 소켓 + 하트비트 | Claude Code 에서 「내일 일정」 |
+| 4 | `ouro-mcp` 읽기 도구 + **일정 제안(`propose_event`) + 승인 카드** + 소켓 + 하트비트 | Claude Code 에서 「내일 일정」, 「금요일 3시 치과 넣어 줘」 → 팝오버 카드 → 한 번 클릭 |
 | 5 | 부탁 모델 + 디스패처(Claude) + 답 표시 | 예약 부탁이 돌고 답이 캘린더에 |
 | 6 | MCP 제안 도구 + 승인 카드 + 순환 제한 | Claude 가 제안 → 내가 승인 → 실행 |
 | 7 | Codex·반복·이어서 부탁·브리핑 | |
@@ -205,3 +205,5 @@ MCP 명세 <https://modelcontextprotocol.io/specification>, iCalendar RRULE RFC 
 | 이름 | 앱 `Ouro`, 한글 별칭 우로우로 | 번들 id `com.dinggi5.ouro`, 데이터 `~/.ouro` |
 | 부탁 대상 순서 | **Claude Code 먼저**(개발 5), Codex 는 v0.2(개발 7) | 디스패처를 처음부터 «대상» 추상화로 짜서 Codex 는 갈래 하나 추가로 끝나게 |
 | 로컬 AI | **MVP 에서 뺌** | 빠른 입력은 규칙 파서. 필요하면 사장이 정해서 나중에 넣는다(§7) |
+| 플랫폼 (개발 3) | **맥 먼저 출시, 그다음 iOS** | iOS 로 가면 기기 간 동기화가 필요해진다 — §2-③ «동기화 없음» 은 맥 단독일 때의 결정. 그때 다시 정한다 |
+| 백업 (개발 3) | **iCloud 로 묶을 예정** | 사용자 자신의 iCloud 라 «우리 서버 없음» 원칙과는 맞는다. 단 **살아 있는 `ouro.db` 를 iCloud Drive 폴더에 두지 않는다** — SQLite(WAL) 파일을 iCloud 가 반쯤 올리거나 두 기기가 동시에 쓰면 깨진다. 매일 스냅숏(`VACUUM INTO`, 한 파일짜리 온전한 DB)만 iCloud Drive 로 복사하는 게 안전한 첫걸음. iOS 동기화는 그 뒤 CloudKit 같은 정식 길로 |
