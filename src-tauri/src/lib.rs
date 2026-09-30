@@ -26,6 +26,7 @@ use tauri::{Emitter, Manager, State};
 /// 이렇게 두면 팝오버가 뜨고 무엇이 잘못됐는지 한 줄로 보여 줄 수 있다.
 struct Core {
     store: Arc<Store>,
+    presence: Arc<mcp::Presence>,
     alerts: alerts::Alerts,
     dir: std::path::PathBuf,
 }
@@ -40,7 +41,7 @@ fn open_core() -> CoreState {
     let dir = store::data_dir().ok_or("홈 폴더를 찾지 못했어요")?;
     let store = Arc::new(Store::open(&dir)?);
     let alerts = alerts::start(store.clone(), dir.join("backup"));
-    Ok(Core { store, alerts, dir })
+    Ok(Core { store, alerts, dir, presence: Arc::default() })
 }
 
 /// 창 [from, to) (UTC ms) 에 걸치는 일정.
@@ -137,16 +138,27 @@ fn start_socket(app: &tauri::AppHandle) {
     let state = app.state::<CoreState>();
     let Ok(c) = state.inner().as_ref() else { return };
     let handle = app.clone();
-    let on_proposal: mcp::OnProposal = Arc::new(move || {
+    let on_change: mcp::OnChange = Arc::new(move |change| {
         let h = handle.clone();
-        let _ = handle.run_on_main_thread(move || {
-            tray::show(&h);
-            let _ = h.emit("proposals-changed", ());
+        let _ = handle.run_on_main_thread(move || match change {
+            mcp::Change::Proposal => {
+                tray::show(&h);
+                let _ = h.emit("proposals-changed", ());
+            }
+            mcp::Change::Presence => {
+                let _ = h.emit("mcp-changed", ());
+            }
         });
     });
-    if let Err(e) = mcp::serve(c.store.clone(), &c.dir, on_proposal) {
+    if let Err(e) = mcp::serve(c.store.clone(), c.presence.clone(), &c.dir, on_change) {
         eprintln!("ouro: MCP 소켓을 못 열었어요 — {e}");
     }
+}
+
+/// 지금 붙어 있는 AI(MCP 클라이언트 이름). 팝오버 아래 «연결됨» 줄.
+#[tauri::command]
+fn mcp_clients(state: State<'_, CoreState>) -> Result<Vec<String>, String> {
+    Ok(core(&state)?.presence.clients(chrono::Utc::now().timestamp_millis()))
 }
 
 /// ⌘W 로 팝오버를 닫는다. 창이 테두리 없음이라 ⌘W 가 러스트의 CloseRequested 까지 오지 않아
@@ -197,7 +209,8 @@ pub fn run() {
             record_parse_miss,
             list_proposals,
             approve_proposal,
-            reject_proposal
+            reject_proposal,
+            mcp_clients
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

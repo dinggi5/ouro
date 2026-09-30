@@ -13,7 +13,7 @@ import { MonthGrid, monthGridRange } from "./components/MonthGrid";
 import { blankDraft, EventSheet, fromEvent, toInput, type Draft } from "./components/EventSheet";
 import { ProposalCard } from "./components/ProposalCard";
 import { QuickBar } from "./components/QuickBar";
-import { asEvent, proposalApi, type Proposal } from "./lib/proposals";
+import { asEvent, clientLabel, proposalApi, type Proposal } from "./lib/proposals";
 import { api, errorText, eventsOn, type EventInput, type OuroEvent } from "./lib/events";
 import { canDirect, quickApi, quickToDraft, type QuickDraft } from "./lib/quick";
 import {
@@ -109,6 +109,7 @@ function App() {
   const [quickText, setQuickText] = useState("");
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [proposalBusy, setProposalBusy] = useState(false);
+  const [aiClients, setAiClients] = useState<string[]>([]);
   const quickRef = useRef<HTMLInputElement>(null);
 
   // 자정이 지나면 «오늘» 에 머물던 커서도 따라 넘어간다. 다른 날을 보고 있었다면 그대로 둔다.
@@ -126,6 +127,27 @@ function App() {
   useEffect(() => {
     api.backupError().then(setBackupError, () => {});
   }, [nowMinute]);
+
+  // 붙어 있는 AI. 붙거나 나가면 러스트가 «mcp-changed» 를 보낸다. 소식이 끊겨 조용히 빠지는 건 이벤트가 없어서
+  // 1분마다·다시 보일 때 한 번 더 읽는다.
+  const loadClients = useCallback(() => {
+    proposalApi.clients().then(setAiClients, () => {});
+  }, []);
+  useEffect(loadClients, [loadClients, nowMinute]);
+  useEffect(() => {
+    window.addEventListener("focus", loadClients);
+    let unlisten: (() => void) | null = null;
+    let alive = true;
+    listen("mcp-changed", loadClients).then(
+      (u) => (alive ? (unlisten = u) : u()),
+      () => {},
+    );
+    return () => {
+      alive = false;
+      window.removeEventListener("focus", loadClients);
+      unlisten?.();
+    };
+  }, [loadClients]);
 
   const [from, to] = useMemo(() => rangeOf(view, cursor), [view, cursor]);
   // 늦게 온 답은 버린다 — 다른 날로 넘긴 뒤 앞 날의 느린 답이 목록을 덮지 않게(코덱스 개발 4). 제안도 같은 규칙.
@@ -424,6 +446,15 @@ function App() {
           </>
         )}
       </section>
+
+      {aiClients.length > 0 && (
+        <p className="flex shrink-0 items-center gap-1.5 px-5 pt-2 text-micro text-accent" title="MCP 로 이 캘린더에 붙어 있어요">
+          <svg width="10" height="10" viewBox="0 0 12 12" aria-hidden="true" className="shrink-0">
+            <circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+          </svg>
+          <span className="truncate">{aiClients.map(clientLabel).join(" · ")} 연결됨</span>
+        </p>
+      )}
 
       {backupError && (
         <p role="alert" className="shrink-0 truncate px-5 pt-2 text-micro text-danger" title={backupError}>

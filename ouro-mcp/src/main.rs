@@ -44,6 +44,9 @@ fn data_dir() -> Option<PathBuf> {
 
 const APP_OFF: &str = "The Ouro app isn't running. Ask the user to open Ouro (menu bar calendar) and try again.";
 
+/// 연결 표시(«◯ Claude Code 연결됨»)를 위한 소식 간격. 앱은 45초 소식이 없으면 끊긴 것으로 본다.
+const HELLO_EVERY: Duration = Duration::from_secs(15);
+
 /// 앱에 한 번 묻는다. Err = 사람(과 AI)이 읽을 한 줄.
 async fn ask(client: &str, op: &str, args: Value) -> Result<Value, String> {
     let path = data_dir().ok_or("Couldn't find the home folder")?.join("ouro.sock");
@@ -52,7 +55,8 @@ async fn ask(client: &str, op: &str, args: Value) -> Result<Value, String> {
             std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => APP_OFF.to_string(),
             _ => format!("Couldn't reach the Ouro app: {e}"),
         })?;
-        let line = json!({ "client": client, "op": op, "args": args }).to_string();
+        let instance = std::process::id().to_string();
+        let line = json!({ "client": client, "instance": instance, "op": op, "args": args }).to_string();
         conn.write_all(format!("{line}\n").as_bytes()).await.map_err(|e| e.to_string())?;
         let mut out = String::new();
         BufReader::new(conn).read_line(&mut out).await.map_err(|e| e.to_string())?;
@@ -258,7 +262,20 @@ async fn main() -> anyhow::Result<()> {
             *c = info.client_info.name.clone();
         }
     }
+    // 붙어 있는 동안 앱에 소식을 보낸다(앱이 꺼져 있으면 조용히 실패하고 다음 바퀴에 다시).
+    let who = client.clone();
+    let beat = tokio::spawn(async move {
+        loop {
+            let name = who.lock().map(|c| c.clone()).unwrap_or_default();
+            let _ = ask(&name, "hello", Value::Null).await;
+            tokio::time::sleep(HELLO_EVERY).await;
+        }
+    });
     service.waiting().await?;
+    beat.abort();
+    // 나간다고 알린다 — 앱이 45초 기다리지 않고 바로 «연결됨» 을 걷는다.
+    let name = client.lock().map(|c| c.clone()).unwrap_or_default();
+    let _ = ask(&name, "bye", Value::Null).await;
     Ok(())
 }
 

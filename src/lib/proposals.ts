@@ -22,6 +22,8 @@ export const proposalApi = {
   /** input = 시트에서 고친 값(없으면 제안 그대로). */
   approve: (id: number, input?: EventInput) => invoke<OuroEvent>("approve_proposal", { id, input: input ?? null }),
   reject: (id: number) => invoke<void>("reject_proposal", { id }),
+  /** 지금 붙어 있는 AI(MCP 클라이언트 이름) — 사이드카가 15초마다 알린다. */
+  clients: () => invoke<string[]>("mcp_clients"),
 };
 
 const CLIENTS: Record<string, string> = {

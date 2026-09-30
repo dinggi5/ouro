@@ -12,6 +12,8 @@
 //     답마다 `now`(요일 포함)를 싣는다 — «금요일» 을 날짜로 바꾸는 건 AI 지만, 오늘이 무슨 요일인지는 이 답이 정본이다.
 //   · 하트비트 파일은 두지 않는다(PLAN §12 의 «하트비트» 를 소켓이 대신한다). Kura 는 파일로 주고받아서 «앱이 살아 있나» 를 따로 적어야 했지만,
 //     소켓은 연결이 되면 살아 있는 것이고 안 되면(없음·거부) 꺼진 것이다. 제안은 DB 에 남으니 화면이 잠깐 죽어 있어도 사라지지 않는다.
+//   · 반대 방향(«AI 가 붙어 있나») 은 사이드카가 15초마다 `hello` 를 보내 알린다(`Presence`, 메모리에만). 팝오버 아래 «◯ Claude Code 연결됨».
+//     사이드카 프로세스마다 `instance`(pid)로 따로 센다 — Claude Code 세션 둘이 같은 이름으로 붙어도 하나가 나갈 때 다른 쪽이 안 지워지게.
 //   · 권한: 소켓은 0700 폴더 안의 0600 파일 — 같은 사용자만 연결한다.
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -42,16 +44,67 @@ pub(crate) fn socket_path(dir: &Path) -> PathBuf {
 struct Request {
     #[serde(default)]
     client: String,
+    /// 사이드카 프로세스 하나를 가리키는 값(pid). 연결 표시를 프로세스별로 센다.
+    #[serde(default)]
+    instance: String,
     op: String,
     #[serde(default)]
     args: Value,
 }
 
-/// 제안이 새로 들어왔을 때 앱이 할 일(팝오버 띄우기·화면 갱신). 테스트에선 아무것도 안 한다.
-pub(crate) type OnProposal = Arc<dyn Fn() + Send + Sync>;
+/// 소켓에서 생긴 일 — 앱이 화면에 알린다. 테스트에선 아무것도 안 한다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Change {
+    /// 새 제안 → 팝오버를 띄우고 카드를 갱신.
+    Proposal,
+    /// 붙은 AI 목록이 바뀜(새로 붙음·나감) → 연결 줄만 갱신.
+    Presence,
+}
+pub(crate) type OnChange = Arc<dyn Fn(Change) + Send + Sync>;
+
+/// 이만큼 소식이 없으면 끊긴 것으로 본다 — 사이드카는 15초마다 hello 를 보내니 세 번 놓친 셈.
+const ALIVE_MS: i64 = 45_000;
+
+/// 지금 붙어 있는 MCP 사이드카들(메모리에만 — 앱을 껐다 켜면 다음 hello 에 다시 채워진다).
+#[derive(Default)]
+pub(crate) struct Presence {
+    /// instance → (클라이언트 이름, 마지막 소식 ms)
+    seen: std::sync::Mutex<std::collections::HashMap<String, (String, i64)>>,
+}
+
+impl Presence {
+    /// 소식 하나를 적는다. 붙은 목록이 바뀌었으면 true(화면을 갱신할 때).
+    fn touch(&self, instance: &str, client: &str, now: i64) -> bool {
+        let mut m = self.seen.lock().unwrap_or_else(|p| p.into_inner());
+        let before = alive_names(&m, now);
+        m.retain(|_, (_, t)| now - *t <= ALIVE_MS);
+        m.insert(instance.to_string(), (client.to_string(), now));
+        alive_names(&m, now) != before
+    }
+
+    fn leave(&self, instance: &str, now: i64) -> bool {
+        let mut m = self.seen.lock().unwrap_or_else(|p| p.into_inner());
+        let before = alive_names(&m, now);
+        m.remove(instance);
+        alive_names(&m, now) != before
+    }
+
+    /// 붙어 있는 클라이언트 이름(중복 없이, 정렬).
+    pub(crate) fn clients(&self, now: i64) -> Vec<String> {
+        alive_names(&self.seen.lock().unwrap_or_else(|p| p.into_inner()), now)
+    }
+}
+
+fn alive_names(m: &std::collections::HashMap<String, (String, i64)>, now: i64) -> Vec<String> {
+    let mut v: Vec<String> =
+        m.values().filter(|(_, t)| now - *t <= ALIVE_MS).map(|(c, _)| c.clone()).collect();
+    v.sort();
+    v.dedup();
+    v
+}
 
 /// 소켓을 열고 받는 스레드를 띄운다. 다른 Ouro 가 이미 소켓을 쥐고 있으면 Err(그쪽을 빼앗지 않는다).
-pub(crate) fn serve(store: Arc<Store>, dir: &Path, on_proposal: OnProposal) -> Result<(), String> {
+pub(crate) fn serve(store: Arc<Store>, presence: Arc<Presence>, dir: &Path, on_change: OnChange) -> Result<(), String> {
     let path = socket_path(dir);
     if path.exists() {
         if UnixStream::connect(&path).is_ok() {
@@ -67,18 +120,19 @@ pub(crate) fn serve(store: Arc<Store>, dir: &Path, on_proposal: OnProposal) -> R
         .spawn(move || {
             for conn in listener.incoming().flatten() {
                 let store = store.clone();
-                let on_proposal = on_proposal.clone();
+                let presence = presence.clone();
+                let on_change = on_change.clone();
                 // 연결 하나 = 요청 하나(짧다). 느린 연결 하나가 다른 걸 막지 않게 스레드로.
                 let _ = std::thread::Builder::new()
                     .name("ouro-mcp-conn".into())
-                    .spawn(move || serve_one(conn, &store, &on_proposal));
+                    .spawn(move || serve_one(conn, &store, &presence, &on_change));
             }
         })
         .map_err(|e| format!("소켓 스레드 실패: {e}"))?;
     Ok(())
 }
 
-fn serve_one(conn: UnixStream, store: &Store, on_proposal: &OnProposal) {
+fn serve_one(conn: UnixStream, store: &Store, presence: &Presence, on_change: &OnChange) {
     let _ = conn.set_read_timeout(Some(Duration::from_secs(5)));
     let _ = conn.set_write_timeout(Some(Duration::from_secs(5)));
     let mut line = String::new();
@@ -88,6 +142,19 @@ fn serve_one(conn: UnixStream, store: &Store, on_proposal: &OnProposal) {
     }
     let (reply, proposed) = match serde_json::from_str::<Request>(&line) {
         Ok(req) => {
+            // 어떤 요청이든 «붙어 있다» 는 소식이다. instance 가 없는 옛 사이드카는 이름으로 센다.
+            if !req.instance.is_empty() || !req.client.is_empty() {
+                let key = if req.instance.is_empty() { &req.client } else { &req.instance };
+                let now = chrono::Utc::now().timestamp_millis();
+                let changed = if req.op == "bye" {
+                    presence.leave(key, now)
+                } else {
+                    presence.touch(key, &clean_client(&req.client), now)
+                };
+                if changed {
+                    on_change(Change::Presence);
+                }
+            }
             let proposed = req.op == "propose";
             match handle(store, &req, Local::now()) {
                 Ok(data) => (json!({ "ok": true, "data": data }), proposed),
@@ -99,7 +166,15 @@ fn serve_one(conn: UnixStream, store: &Store, on_proposal: &OnProposal) {
     let mut w = conn;
     let _ = writeln!(w, "{reply}");
     if proposed {
-        on_proposal();
+        on_change(Change::Proposal);
+    }
+}
+
+/// 클라이언트가 밝힌 이름을 보여 줄 모양으로(제어 문자 빼고 60자) — store 의 제안 이름과 같은 규칙.
+fn clean_client(c: &str) -> String {
+    match c.trim() {
+        "" => "unknown".into(),
+        c => c.chars().filter(|c| !c.is_control()).take(60).collect(),
     }
 }
 
@@ -120,6 +195,8 @@ fn handle(store: &Store, req: &Request, now_at: DateTime<Local>) -> Result<Value
             let p = store.get_proposal(id)?.ok_or("없는 제안이에요")?;
             proposal_status_json(store, &p)?
         }
+        // 연결 표시용 — 소식은 serve_one 이 이미 적었다.
+        "hello" | "bye" => json!({}),
         // 🔴 승인·거절·수정·삭제는 여기 없다 — 위 머리 주석.
         other => return Err(format!("모르는 요청이에요: {other}")),
     };
@@ -437,7 +514,7 @@ mod tests {
     }
 
     fn req(op: &str, args: Value) -> Request {
-        Request { client: "claude-code".into(), op: op.into(), args }
+        Request { client: "claude-code".into(), instance: String::new(), op: op.into(), args }
     }
 
     fn at(s: &str) -> i64 {
@@ -616,18 +693,30 @@ mod tests {
     }
 
     #[test]
+    fn presence_counts_processes_and_expires() {
+        let p = Presence::default();
+        assert!(p.touch("11", "claude-code", 0), "처음 붙음 = 바뀜");
+        assert!(!p.touch("11", "claude-code", 1_000), "같은 소식 = 안 바뀜");
+        assert!(!p.touch("22", "claude-code", 2_000), "같은 이름의 두 번째 세션 = 목록은 그대로");
+        assert!(!p.leave("11", 3_000), "하나가 나가도 다른 세션이 남았다");
+        assert_eq!(p.clients(3_000), vec!["claude-code"]);
+        assert!(p.touch("33", "codex-mcp-client", 4_000));
+        assert_eq!(p.clients(4_000), vec!["claude-code", "codex-mcp-client"]);
+        assert_eq!(p.clients(2_000 + ALIVE_MS + 1), vec!["codex-mcp-client"], "소식 끊긴 세션은 빠진다");
+        assert!(p.leave("33", 5_000));
+    }
+
+    #[test]
     fn socket_round_trip_and_stale_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = socket_path(dir.path());
         // 죽은 앱이 남긴 소켓 파일(연결 안 받음)은 지우고 연다.
         drop(UnixListener::bind(&path).unwrap());
         let store = Arc::new(Store::open_in_memory());
-        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let presence = Arc::new(Presence::default());
+        let hits = Arc::new(std::sync::Mutex::new(Vec::new()));
         let h = hits.clone();
-        serve(store.clone(), dir.path(), Arc::new(move || {
-            h.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }))
-        .unwrap();
+        serve(store.clone(), presence.clone(), dir.path(), Arc::new(move |c| h.lock().unwrap().push(c))).unwrap();
         let ask = |line: &str| {
             let mut c = UnixStream::connect(&path).unwrap();
             writeln!(c, "{line}").unwrap();
@@ -635,18 +724,20 @@ mod tests {
             BufReader::new(c).read_line(&mut out).unwrap();
             serde_json::from_str::<Value>(&out).unwrap()
         };
-        let r = ask(r#"{"client":"t","op":"propose","args":{"title":"치과","start":"2030-01-02T15:00"}}"#);
+        let r = ask(r#"{"client":"t","instance":"1","op":"propose","args":{"title":"치과","start":"2030-01-02T15:00"}}"#);
         assert_eq!(r["ok"], true, "{r}");
         assert_eq!(r["data"]["status"], "pending");
         assert_eq!(ask("not json")["ok"], false);
-        assert_eq!(ask(r#"{"op":"approve","args":{"id":1}}"#)["ok"], false);
-        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1, "새 제안에만 팝오버");
+        assert_eq!(ask(r#"{"client":"t","instance":"1","op":"approve","args":{"id":1}}"#)["ok"], false);
+        assert_eq!(*hits.lock().unwrap(), vec![Change::Presence, Change::Proposal], "붙음 한 번 + 새 제안에만 팝오버");
+        assert_eq!(ask(r#"{"client":"t","instance":"1","op":"bye"}"#)["ok"], true);
+        assert!(presence.clients(chrono::Utc::now().timestamp_millis()).is_empty());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         }
         // 살아 있는 소켓은 빼앗지 않는다.
-        assert!(serve(store, dir.path(), Arc::new(|| {})).is_err());
+        assert!(serve(store, presence, dir.path(), Arc::new(|_| {})).is_err());
     }
 }
