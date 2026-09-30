@@ -20,7 +20,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Datelike, Days, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Weekday};
 use serde::Deserialize;
@@ -63,44 +63,77 @@ pub(crate) enum Change {
 pub(crate) type OnChange = Arc<dyn Fn(Change) + Send + Sync>;
 
 /// 이만큼 소식이 없으면 끊긴 것으로 본다 — 사이드카는 15초마다 hello 를 보내니 세 번 놓친 셈.
-const ALIVE_MS: i64 = 45_000;
+const ALIVE: Duration = Duration::from_secs(45);
+/// 동시에 셀 사이드카 수·instance 길이 상한 — 같은 사용자의 아무 프로세스나 소켓에 쓸 수 있으니 맵이 끝없이 크지 않게(코덱스 개발 4 보완).
+const PRESENCE_MAX: usize = 64;
+const INSTANCE_MAX: usize = 32;
 
 /// 지금 붙어 있는 MCP 사이드카들(메모리에만 — 앱을 껐다 켜면 다음 hello 에 다시 채워진다).
+/// 시간은 **단조 시계**(`Instant`) — 시스템 시각을 뒤로 돌려도 끊긴 세션이 «연결됨» 으로 남지 않게(코덱스 개발 4 보완).
 #[derive(Default)]
 pub(crate) struct Presence {
-    /// instance → (클라이언트 이름, 마지막 소식 ms)
-    seen: std::sync::Mutex<std::collections::HashMap<String, (String, i64)>>,
+    inner: std::sync::Mutex<PresenceMap>,
+}
+
+#[derive(Default)]
+struct PresenceMap {
+    /// instance → (클라이언트 이름, 마지막 소식)
+    seen: std::collections::HashMap<String, (String, Instant)>,
+    /// bye 를 보낸 instance — 연결마다 스레드라 bye 가 그 앞에 보낸 hello 보다 먼저 처리될 수 있다.
+    /// 늦게 온 hello 가 나간 세션을 되살리지 않게 ALIVE 동안 기억한다(코덱스 개발 4 보완).
+    left: std::collections::HashMap<String, Instant>,
+}
+
+impl PresenceMap {
+    fn prune(&mut self, now: Instant) {
+        self.seen.retain(|_, (_, t)| now.saturating_duration_since(*t) <= ALIVE);
+        self.left.retain(|_, t| now.saturating_duration_since(*t) <= ALIVE);
+    }
+
+    fn names(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.seen.values().map(|(c, _)| c.clone()).collect();
+        v.sort();
+        v.dedup();
+        v
+    }
 }
 
 impl Presence {
-    /// 소식 하나를 적는다. 붙은 목록이 바뀌었으면 true(화면을 갱신할 때).
-    fn touch(&self, instance: &str, client: &str, now: i64) -> bool {
-        let mut m = self.seen.lock().unwrap_or_else(|p| p.into_inner());
-        let before = alive_names(&m, now);
-        m.retain(|_, (_, t)| now - *t <= ALIVE_MS);
-        m.insert(instance.to_string(), (client.to_string(), now));
-        alive_names(&m, now) != before
+    fn lock(&self) -> std::sync::MutexGuard<'_, PresenceMap> {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    fn leave(&self, instance: &str, now: i64) -> bool {
-        let mut m = self.seen.lock().unwrap_or_else(|p| p.into_inner());
-        let before = alive_names(&m, now);
-        m.remove(instance);
-        alive_names(&m, now) != before
+    /// 소식 하나를 적는다. 붙은 목록이 바뀌었으면 true(화면을 갱신할 때).
+    fn touch(&self, instance: &str, client: &str, now: Instant) -> bool {
+        let key: String = instance.chars().take(INSTANCE_MAX).collect();
+        let mut m = self.lock();
+        m.prune(now);
+        let before = m.names();
+        if m.left.contains_key(&key) || (!m.seen.contains_key(&key) && m.seen.len() >= PRESENCE_MAX) {
+            return false;
+        }
+        m.seen.insert(key, (client.to_string(), now));
+        m.names() != before
+    }
+
+    fn leave(&self, instance: &str, now: Instant) -> bool {
+        let key: String = instance.chars().take(INSTANCE_MAX).collect();
+        let mut m = self.lock();
+        m.prune(now);
+        let before = m.names();
+        m.seen.remove(&key);
+        if m.left.len() < PRESENCE_MAX {
+            m.left.insert(key, now);
+        }
+        m.names() != before
     }
 
     /// 붙어 있는 클라이언트 이름(중복 없이, 정렬).
-    pub(crate) fn clients(&self, now: i64) -> Vec<String> {
-        alive_names(&self.seen.lock().unwrap_or_else(|p| p.into_inner()), now)
+    pub(crate) fn clients(&self, now: Instant) -> Vec<String> {
+        let mut m = self.lock();
+        m.prune(now);
+        m.names()
     }
-}
-
-fn alive_names(m: &std::collections::HashMap<String, (String, i64)>, now: i64) -> Vec<String> {
-    let mut v: Vec<String> =
-        m.values().filter(|(_, t)| now - *t <= ALIVE_MS).map(|(c, _)| c.clone()).collect();
-    v.sort();
-    v.dedup();
-    v
 }
 
 /// 소켓을 열고 받는 스레드를 띄운다. 다른 Ouro 가 이미 소켓을 쥐고 있으면 Err(그쪽을 빼앗지 않는다).
@@ -145,7 +178,7 @@ fn serve_one(conn: UnixStream, store: &Store, presence: &Presence, on_change: &O
             // 어떤 요청이든 «붙어 있다» 는 소식이다. instance 가 없는 옛 사이드카는 이름으로 센다.
             if !req.instance.is_empty() || !req.client.is_empty() {
                 let key = if req.instance.is_empty() { &req.client } else { &req.instance };
-                let now = chrono::Utc::now().timestamp_millis();
+                let now = Instant::now();
                 let changed = if req.op == "bye" {
                     presence.leave(key, now)
                 } else {
@@ -694,16 +727,31 @@ mod tests {
 
     #[test]
     fn presence_counts_processes_and_expires() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
         let p = Presence::default();
-        assert!(p.touch("11", "claude-code", 0), "처음 붙음 = 바뀜");
-        assert!(!p.touch("11", "claude-code", 1_000), "같은 소식 = 안 바뀜");
-        assert!(!p.touch("22", "claude-code", 2_000), "같은 이름의 두 번째 세션 = 목록은 그대로");
-        assert!(!p.leave("11", 3_000), "하나가 나가도 다른 세션이 남았다");
-        assert_eq!(p.clients(3_000), vec!["claude-code"]);
-        assert!(p.touch("33", "codex-mcp-client", 4_000));
-        assert_eq!(p.clients(4_000), vec!["claude-code", "codex-mcp-client"]);
-        assert_eq!(p.clients(2_000 + ALIVE_MS + 1), vec!["codex-mcp-client"], "소식 끊긴 세션은 빠진다");
-        assert!(p.leave("33", 5_000));
+        assert!(p.touch("11", "claude-code", at(0)), "처음 붙음 = 바뀜");
+        assert!(!p.touch("11", "claude-code", at(1_000)), "같은 소식 = 안 바뀜");
+        assert!(!p.touch("22", "claude-code", at(2_000)), "같은 이름의 두 번째 세션 = 목록은 그대로");
+        assert!(!p.leave("11", at(3_000)), "하나가 나가도 다른 세션이 남았다");
+        assert!(!p.touch("11", "claude-code", at(3_100)), "bye 뒤에 늦게 처리된 hello 는 무시");
+        assert_eq!(p.clients(at(3_000)), vec!["claude-code"]);
+        assert!(p.touch("33", "codex-mcp-client", at(4_000)));
+        assert_eq!(p.clients(at(4_000)), vec!["claude-code", "codex-mcp-client"]);
+        assert_eq!(p.clients(at(2_000) + ALIVE + Duration::from_millis(1)), vec!["codex-mcp-client"], "소식 끊긴 세션은 빠진다");
+        assert!(p.leave("33", at(5_000)));
+    }
+
+    #[test]
+    fn presence_is_bounded() {
+        let now = Instant::now();
+        let p = Presence::default();
+        for i in 0..PRESENCE_MAX + 10 {
+            p.touch(&format!("{i}"), &format!("c{i}"), now);
+        }
+        assert_eq!(p.clients(now).len(), PRESENCE_MAX);
+        p.touch(&"x".repeat(10_000), "long", now);
+        assert!(p.lock().seen.keys().all(|k| k.chars().count() <= INSTANCE_MAX));
     }
 
     #[test]
@@ -731,7 +779,7 @@ mod tests {
         assert_eq!(ask(r#"{"client":"t","instance":"1","op":"approve","args":{"id":1}}"#)["ok"], false);
         assert_eq!(*hits.lock().unwrap(), vec![Change::Presence, Change::Proposal], "붙음 한 번 + 새 제안에만 팝오버");
         assert_eq!(ask(r#"{"client":"t","instance":"1","op":"bye"}"#)["ok"], true);
-        assert!(presence.clients(chrono::Utc::now().timestamp_millis()).is_empty());
+        assert!(presence.clients(Instant::now()).is_empty());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

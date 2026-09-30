@@ -158,7 +158,7 @@ fn start_socket(app: &tauri::AppHandle) {
 /// 지금 붙어 있는 AI(MCP 클라이언트 이름). 팝오버 아래 «연결됨» 줄.
 #[tauri::command]
 fn mcp_clients(state: State<'_, CoreState>) -> Result<Vec<String>, String> {
-    Ok(core(&state)?.presence.clients(chrono::Utc::now().timestamp_millis()))
+    Ok(core(&state)?.presence.clients(std::time::Instant::now()))
 }
 
 /// ⌘W 로 팝오버를 닫는다. 창이 테두리 없음이라 ⌘W 가 러스트의 CloseRequested 까지 오지 않아
