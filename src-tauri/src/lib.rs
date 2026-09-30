@@ -113,7 +113,7 @@ fn list_proposals(state: State<'_, CoreState>) -> Result<Vec<ProposalCard>, Stri
     let s = &core(&state)?.store;
     s.pending_proposals()?
         .into_iter()
-        .map(|p| Ok(ProposalCard { conflicts: mcp::conflicts(s, &p.event)?, proposal: p }))
+        .map(|p| Ok(ProposalCard { conflicts: mcp::conflicts(s, &p.event, None)?, proposal: p }))
         .collect()
 }
 

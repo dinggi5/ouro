@@ -372,7 +372,7 @@ fn proposal_json(store: &Store, p: &Proposal) -> Result<Value, String> {
         "proposal_id": p.id,
         "status": p.status,
         "event": ev,
-        "conflicts": conflicts(store, e)?,
+        "conflicts": conflicts(store, e, None)?,
     });
     if let Some(id) = p.event_id {
         out["event_id"] = json!(id);
@@ -390,6 +390,19 @@ fn proposal_status_json(store: &Store, p: &Proposal) -> Result<Value, String> {
     let mut out = json!({ "proposal_id": p.id, "status": p.status });
     match p.event_id.map(|id| store.get_event(id)).transpose()?.flatten() {
         Some(e) if !e.private => {
+            // 승인 결과에도 겹침을 싣는다 — 60초 안에 승인되면 AI 는 이 답만 받는다(코덱스 개발 4 2차). 자기 자신은 뺀다.
+            let input = EventInput {
+                title: e.title.clone(),
+                notes: String::new(),
+                all_day: e.all_day,
+                start_at: e.start_at,
+                end_at: e.end_at,
+                start_date: e.start_date.clone(),
+                end_date: e.end_date.clone(),
+                alert_min: None,
+                private: false,
+            };
+            out["conflicts"] = json!(conflicts(store, &input, Some(e.id))?);
             out["event_id"] = json!(e.id);
             out["event"] = event_json(&e);
         }
@@ -399,7 +412,7 @@ fn proposal_status_json(store: &Store, p: &Proposal) -> Result<Value, String> {
 }
 
 /// 제안과 겹치는 (AI 에게 보여도 되는) 일정 제목. 비공개는 «비공개 일정» 으로만.
-pub(crate) fn conflicts(store: &Store, e: &EventInput) -> Result<Vec<String>, String> {
+pub(crate) fn conflicts(store: &Store, e: &EventInput, skip: Option<i64>) -> Result<Vec<String>, String> {
     let (from, to) = match (e.start_at, e.end_at, e.start_date.as_deref(), e.end_date.as_deref()) {
         (Some(s), Some(x), _, _) => (s, x.max(s + 1)),
         (_, _, Some(s), Some(x)) => (day_start_ms(parse_day(s)?)?, day_start_ms(parse_day(x)?)?),
@@ -410,6 +423,7 @@ pub(crate) fn conflicts(store: &Store, e: &EventInput) -> Result<Vec<String>, St
         .into_iter()
         // 시각 제안엔 시각 일정만 겹침으로 친다(종일 표시는 시간을 막지 않는다 — busy_between 과 같은 규칙).
         .filter(|x| e.all_day || !x.all_day)
+        .filter(|x| Some(x.id) != skip)
         .map(|x| if x.private { "비공개 일정".to_string() } else { x.title })
         .collect())
 }
@@ -520,8 +534,10 @@ mod tests {
         let p2 = handle(&s, &req("propose", json!({"title":"치과","start":"2026-10-03T15:00"})), now()).unwrap();
         let id2 = p2["proposal_id"].as_i64().unwrap();
         s.approve_proposal(id2, Some(&timed("치과 (옮김)", "2026-10-03T16:00", "2026-10-03T17:00", false))).unwrap();
+        s.create_event(&timed("회의", "2026-10-03T16:30", "2026-10-03T17:30", false)).unwrap();
         let q2 = handle(&s, &req("proposal", json!({"id": id2})), now()).unwrap();
         assert_eq!(q2["event"]["title"], "치과 (옮김)");
+        assert_eq!(q2["conflicts"], json!(["회의"]), "승인 답에도 겹침, 자기 자신은 빼고");
     }
 
     #[test]
