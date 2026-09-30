@@ -8,6 +8,10 @@
 //   · 시간은 두 갈래다. 시각이 있는 일정 = `start_at`/`end_at`(UTC 밀리초, 절대 시각).
 //     종일 일정 = `start_date`/`end_date`(로컬 달력 날짜 `YYYY-MM-DD`, **끝은 배타**, RFC 5545 DTEND 와 같은 규칙).
 //     종일을 밀리초로 저장하면 다른 시간대로 가거나 서머타임이 끼는 순간 하루가 밀린다 — 종일은 «날짜» 지 «시각» 이 아니다.
+//   · **비공개(`private`) 일정은 MCP 로 나가지 않는다**(PLAN §8). 막는 곳은 `list_events_for_ai` 하나 —
+//     빈 시간 계산(`busy_between`)만 비공개도 «바쁨» 으로 센다(제목·시각은 안 나가고 «이 틈은 비어 있지 않다» 만 드러난다).
+//   · AI 가 낸 일정은 `proposals` 에 **제안**으로만 들어간다. 일정이 되는 길은 사람이 누르는 `approve_proposal` 하나다
+//     (CLAUDE.md 불변 규칙 — 소켓엔 승인 문이 없다, mcp.rs).
 //   · 지우기는 **휴지통**(`deleted_at`). 팝오버의 «되돌리기» 가 되살릴 수 있어야 하고, 동기화가 없어
 //     실수로 지운 일정은 되찾을 길이 백업뿐이다. 7일 지나면 켤 때 비운다(`purge_trash`).
 
@@ -54,11 +58,15 @@ pub(crate) struct Event {
     pub start_date: Option<String>,
     pub end_date: Option<String>,
     pub alert_min: Option<i64>,
+    /// 1 = MCP 로 안 나간다(PLAN §8).
+    pub private: bool,
+    /// 누가 만들었나 — `user`(팝오버) · `mcp`(AI 제안을 사람이 승인) · `import`.
+    pub origin: String,
     pub updated_at: i64,
 }
 
 /// 만들기·고치기 입력. 모양 검사는 `validate` 가 한다 — 프론트를 믿지 않는다(개발 4 부터는 MCP 도 이 길로 온다).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EventInput {
     pub title: String,
@@ -70,6 +78,8 @@ pub(crate) struct EventInput {
     pub start_date: Option<String>,
     pub end_date: Option<String>,
     pub alert_min: Option<i64>,
+    #[serde(default)]
+    pub private: bool,
 }
 
 /// 검사를 통과한 입력. 제목은 앞뒤 공백을 걷어 낸 값.
@@ -79,6 +89,7 @@ struct Valid {
     notes: String,
     when: When,
     alert_min: Option<i64>,
+    private: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -144,6 +155,7 @@ fn validate(input: &EventInput) -> Result<Valid, String> {
         notes: input.notes.clone(),
         when,
         alert_min: input.alert_min,
+        private: input.private,
     })
 }
 
@@ -221,7 +233,100 @@ const MIGRATIONS: &[&str] = &[
         last_at INTEGER NOT NULL
     );
     ",
+    // 3 — 개발 4: AI 가 MCP 로 낸 일정 제안. 사람이 승인해야 `items` 에 일정이 생긴다(`approve_proposal`).
+    //     일정 칸은 `items` 와 같은 모양(검사도 같은 `validate`). 결정된 제안은 남겨 둔다 — «AI 가 무엇을 냈고 내가 무엇을 받았나».
+    "
+    CREATE TABLE proposals (
+        id          INTEGER PRIMARY KEY,
+        client      TEXT    NOT NULL,  -- MCP 클라이언트가 스스로 밝힌 이름(믿지 않는다 — 보여 주기만)
+        title       TEXT    NOT NULL,
+        notes       TEXT    NOT NULL DEFAULT '',
+        all_day     INTEGER NOT NULL CHECK (all_day IN (0, 1)),
+        start_at    INTEGER,
+        end_at      INTEGER,
+        start_date  TEXT,
+        end_date    TEXT,
+        alert_min   INTEGER,
+        status      TEXT    NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'approved', 'rejected', 'expired')),
+        created_at  INTEGER NOT NULL,
+        decided_at  INTEGER,
+        event_id    INTEGER REFERENCES items (id) ON DELETE SET NULL
+    );
+    CREATE INDEX proposals_pending ON proposals (created_at) WHERE status = 'pending';
+    ",
 ];
+
+/// 한꺼번에 기다릴 수 있는 제안 수. AI 가 고리에 빠져 수백 개를 쌓아 팝오버를 덮지 않게.
+const PENDING_MAX: i64 = 20;
+/// 이만큼 아무도 안 누른 제안은 만료 — 한 주 전 대화의 제안이 불쑥 일정이 되지 않게.
+const PROPOSAL_KEEP_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+/// 제안을 낸 클라이언트 이름 길이 상한(보여 주기만 하는 칸).
+const CLIENT_MAX: usize = 60;
+
+/// AI 의 일정 제안 — 팝오버 카드와 MCP 답으로 가는 모양.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Proposal {
+    pub id: i64,
+    pub client: String,
+    pub event: EventInput,
+    /// pending · approved · rejected · expired
+    pub status: String,
+    pub created_at: i64,
+    pub decided_at: Option<i64>,
+    pub event_id: Option<i64>,
+}
+
+fn row_to_proposal(r: &Row) -> rusqlite::Result<Proposal> {
+    Ok(Proposal {
+        id: r.get("id")?,
+        client: r.get("client")?,
+        event: EventInput {
+            title: r.get("title")?,
+            notes: r.get("notes")?,
+            all_day: r.get("all_day")?,
+            start_at: r.get("start_at")?,
+            end_at: r.get("end_at")?,
+            start_date: r.get("start_date")?,
+            end_date: r.get("end_date")?,
+            alert_min: r.get("alert_min")?,
+            private: false,
+        },
+        status: r.get("status")?,
+        created_at: r.get("created_at")?,
+        decided_at: r.get("decided_at")?,
+        event_id: r.get("event_id")?,
+    })
+}
+
+const PROPOSAL_COLS: &str = "id, client, title, notes, all_day, start_at, end_at, start_date, end_date, alert_min,
+     status, created_at, decided_at, event_id";
+
+/// 일정 한 줄 넣기 — `create_event` 와 `approve_proposal`(트랜잭션 안) 이 같이 쓴다.
+fn insert_event(conn: &Connection, v: &Valid, origin: &str, now: i64) -> rusqlite::Result<i64> {
+    let (sa, ea, sd, ed) = split_when(&v.when);
+    conn.execute(
+        "INSERT INTO items (kind, title, notes, all_day, start_at, end_at, start_date, end_date,
+                            tz, alert_min, private, origin, created_at, updated_at)
+         VALUES ('event', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+        params![
+            v.title,
+            v.notes,
+            matches!(v.when, When::AllDay { .. }),
+            sa,
+            ea,
+            sd,
+            ed,
+            local_tz(),
+            v.alert_min,
+            v.private,
+            origin,
+            now
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
 
 pub(crate) struct Store {
     conn: Mutex<Connection>,
@@ -246,12 +351,14 @@ fn row_to_event(r: &Row) -> rusqlite::Result<Event> {
         start_date: r.get("start_date")?,
         end_date: r.get("end_date")?,
         alert_min: r.get("alert_min")?,
+        private: r.get("private")?,
+        origin: r.get("origin")?,
         updated_at: r.get("updated_at")?,
     })
 }
 
 const EVENT_COLS: &str =
-    "id, title, notes, all_day, start_at, end_at, start_date, end_date, alert_min, updated_at";
+    "id, title, notes, all_day, start_at, end_at, start_date, end_date, alert_min, private, origin, updated_at";
 
 /// 로컬 시각 창 [from, to) 이 걸치는 달력 날짜 [from_date, to_date) — 종일 일정 겹침 검사용.
 fn date_window(from_ms: i64, to_ms: i64) -> (String, String) {
@@ -340,20 +447,126 @@ impl Store {
 
     pub(crate) fn create_event(&self, input: &EventInput) -> Result<Event, String> {
         let v = validate(input)?;
-        let now = now_ms();
+        let id = insert_event(&self.conn(), &v, "user", now_ms()).map_err(|e| e.to_string())?;
+        self.get_event(id)?.ok_or_else(|| "방금 만든 일정을 못 찾았어요".into())
+    }
+
+    /// AI 에게 보여도 되는 일정 — `list_events` 에서 비공개만 뺀다. MCP 가 일정을 읽는 **유일한** 길이다.
+    pub(crate) fn list_events_for_ai(&self, from_ms: i64, to_ms: i64) -> Result<Vec<Event>, String> {
+        Ok(self.list_events(from_ms, to_ms)?.into_iter().filter(|e| !e.private).collect())
+    }
+
+    /// 빈 시간 계산용 — [from, to) 에 걸치는 **시각 일정**의 (시작, 끝). 비공개도 바쁨으로 센다(무엇인지는 안 나간다).
+    /// 종일 일정은 시간을 막지 않는다(생일·휴가 표시를 «하루 종일 바쁨» 으로 읽으면 빈 시간이 늘 0 이 된다).
+    pub(crate) fn busy_between(&self, from_ms: i64, to_ms: i64) -> Result<Vec<(i64, i64)>, String> {
+        Ok(self
+            .list_events(from_ms, to_ms)?
+            .into_iter()
+            .filter_map(|e| Some((e.start_at?, e.end_at?)))
+            .filter(|(s, e)| e > s)
+            .collect())
+    }
+
+    /// AI 의 제안을 받아 둔다. 일정이 되진 않는다 — 사람이 `approve_proposal` 로 받아야 한다.
+    /// 검사는 일정과 같은 `validate`(AI 가 바로 틀린 걸 알 수 있게). 비공개 칸은 받지 않는다(사람이 정할 일).
+    pub(crate) fn add_proposal(&self, client: &str, input: &EventInput) -> Result<Proposal, String> {
+        let mut input = input.clone();
+        input.private = false;
+        let v = validate(&input)?;
         let (sa, ea, sd, ed) = split_when(&v.when);
+        let client: String = match client.trim() {
+            "" => "unknown".into(),
+            c => c.chars().filter(|c| !c.is_control()).take(CLIENT_MAX).collect(),
+        };
+        let now = now_ms();
         let id = {
             let conn = self.conn();
+            expire_proposals(&conn, now).map_err(|e| e.to_string())?;
+            let pending: i64 = conn
+                .query_row("SELECT COUNT(*) FROM proposals WHERE status = 'pending'", [], |r| r.get(0))
+                .map_err(|e| e.to_string())?;
+            if pending >= PENDING_MAX {
+                return Err(format!(
+                    "기다리는 제안이 이미 {PENDING_MAX}개예요 — 사람이 팝오버에서 정리한 뒤에 다시 내 주세요"
+                ));
+            }
             conn.execute(
-                "INSERT INTO items (kind, title, notes, all_day, start_at, end_at, start_date, end_date,
-                                    tz, alert_min, created_at, updated_at)
-                 VALUES ('event', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
-                params![v.title, v.notes, input.all_day, sa, ea, sd, ed, local_tz(), v.alert_min, now],
+                "INSERT INTO proposals (client, title, notes, all_day, start_at, end_at, start_date, end_date,
+                                        alert_min, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![client, v.title, v.notes, input.all_day, sa, ea, sd, ed, v.alert_min, now],
             )
             .map_err(|e| e.to_string())?;
             conn.last_insert_rowid()
         };
-        self.get_event(id)?.ok_or_else(|| "방금 만든 일정을 못 찾았어요".into())
+        self.get_proposal(id)?.ok_or_else(|| "방금 받은 제안을 못 찾았어요".into())
+    }
+
+    pub(crate) fn get_proposal(&self, id: i64) -> Result<Option<Proposal>, String> {
+        let conn = self.conn();
+        expire_proposals(&conn, now_ms()).map_err(|e| e.to_string())?;
+        conn.query_row(&format!("SELECT {PROPOSAL_COLS} FROM proposals WHERE id = ?1"), [id], row_to_proposal)
+            .optional()
+            .map_err(|e| e.to_string())
+    }
+
+    /// 기다리는 제안, 먼저 온 순.
+    pub(crate) fn pending_proposals(&self) -> Result<Vec<Proposal>, String> {
+        let conn = self.conn();
+        expire_proposals(&conn, now_ms()).map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare_cached(&format!(
+                "SELECT {PROPOSAL_COLS} FROM proposals WHERE status = 'pending' ORDER BY created_at, id"
+            ))
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], row_to_proposal)
+            .and_then(|it| it.collect::<rusqlite::Result<Vec<_>>>())
+            .map_err(|e| e.to_string())?;
+        Ok(rows)
+    }
+
+    /// 사람이 제안을 받는다 → 일정 하나. `edited` = 시트에서 고친 값(없으면 제안 그대로).
+    /// 상태 확인·일정 넣기·상태 바꾸기가 **한 트랜잭션** — 두 번 눌러도 일정은 하나다.
+    pub(crate) fn approve_proposal(&self, id: i64, edited: Option<&EventInput>) -> Result<Event, String> {
+        let now = now_ms();
+        let event_id = {
+            let mut conn = self.conn();
+            expire_proposals(&conn, now).map_err(|e| e.to_string())?;
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            let p = tx
+                .query_row(&format!("SELECT {PROPOSAL_COLS} FROM proposals WHERE id = ?1"), [id], row_to_proposal)
+                .optional()
+                .map_err(|e| e.to_string())?
+                .ok_or("없는 제안이에요")?;
+            if p.status != "pending" {
+                return Err(proposal_gone(&p.status).into());
+            }
+            let v = validate(edited.unwrap_or(&p.event))?;
+            let event_id = insert_event(&tx, &v, "mcp", now).map_err(|e| e.to_string())?;
+            tx.execute(
+                "UPDATE proposals SET status = 'approved', decided_at = ?2, event_id = ?3 WHERE id = ?1",
+                params![id, now, event_id],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+            event_id
+        };
+        self.get_event(event_id)?.ok_or_else(|| "받은 일정을 못 찾았어요".into())
+    }
+
+    pub(crate) fn reject_proposal(&self, id: i64) -> Result<(), String> {
+        let conn = self.conn();
+        let n = conn
+            .execute(
+                "UPDATE proposals SET status = 'rejected', decided_at = ?2 WHERE id = ?1 AND status = 'pending'",
+                params![id, now_ms()],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("이미 정리된 제안이에요".into());
+        }
+        Ok(())
     }
 
     pub(crate) fn update_event(&self, id: i64, input: &EventInput) -> Result<Event, String> {
@@ -363,9 +576,9 @@ impl Store {
             .conn()
             .execute(
                 "UPDATE items SET title = ?2, notes = ?3, all_day = ?4, start_at = ?5, end_at = ?6,
-                                  start_date = ?7, end_date = ?8, alert_min = ?9, updated_at = ?10
+                                  start_date = ?7, end_date = ?8, alert_min = ?9, private = ?10, updated_at = ?11
                  WHERE id = ?1 AND kind = 'event' AND deleted_at IS NULL",
-                params![id, v.title, v.notes, input.all_day, sa, ea, sd, ed, v.alert_min, now_ms()],
+                params![id, v.title, v.notes, input.all_day, sa, ea, sd, ed, v.alert_min, v.private, now_ms()],
             )
             .map_err(|e| e.to_string())?;
         if n == 0 {
@@ -492,6 +705,21 @@ fn split_when(w: &When) -> (Option<i64>, Option<i64>, Option<String>, Option<Str
     }
 }
 
+fn proposal_gone(status: &str) -> &'static str {
+    match status {
+        "approved" => "이미 넣은 제안이에요",
+        "rejected" => "이미 거절한 제안이에요",
+        _ => "기한이 지난 제안이에요",
+    }
+}
+
+fn expire_proposals(conn: &Connection, now: i64) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE proposals SET status = 'expired', decided_at = ?1 WHERE status = 'pending' AND created_at < ?2",
+        params![now, now - PROPOSAL_KEEP_MS],
+    )
+}
+
 fn migrate(conn: &Connection) -> Result<(), String> {
     let applied: usize = conn
         .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
@@ -550,6 +778,7 @@ mod tests {
             start_date: None,
             end_date: None,
             alert_min: None,
+            private: false,
         }
     }
 
@@ -563,6 +792,7 @@ mod tests {
             start_date: Some(start.into()),
             end_date: Some(end.into()),
             alert_min: None,
+            private: false,
         }
     }
 
@@ -719,6 +949,77 @@ mod tests {
         let copy = Connection::open(&dest).unwrap();
         let n: i64 = copy.query_row("SELECT COUNT(*) FROM items", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn ai_never_sees_private_but_free_time_counts_it() {
+        let s = Store::open_in_memory();
+        let mut secret = timed("병원", 1_000, 2_000);
+        secret.private = true;
+        let secret = s.create_event(&secret).unwrap();
+        let open = s.create_event(&timed("회의", 3_000, 4_000)).unwrap();
+        let ids: Vec<i64> = s.list_events_for_ai(0, 10_000).unwrap().iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec![open.id]);
+        assert!(s.list_events(0, 10_000).unwrap().iter().any(|e| e.id == secret.id), "팝오버엔 보인다");
+        assert_eq!(s.busy_between(0, 10_000).unwrap(), vec![(1_000, 2_000), (3_000, 4_000)]);
+        // 비공개를 고쳐도 비공개가 남는다.
+        let mut edit = timed("병원 (옮김)", 1_500, 2_500);
+        edit.private = true;
+        assert!(s.update_event(secret.id, &edit).unwrap().private);
+    }
+
+    #[test]
+    fn proposal_becomes_event_only_through_approval() {
+        let s = Store::open_in_memory();
+        let p = s.add_proposal("claude-code", &timed("치과", 1_000, 2_000)).unwrap();
+        assert_eq!(p.status, "pending");
+        assert!(s.list_events(0, 10_000).unwrap().is_empty(), "제안만으로는 일정이 없다");
+        let e = s.approve_proposal(p.id, None).unwrap();
+        assert_eq!((e.title.as_str(), e.origin.as_str()), ("치과", "mcp"));
+        let p = s.get_proposal(p.id).unwrap().unwrap();
+        assert_eq!((p.status.as_str(), p.event_id), ("approved", Some(e.id)));
+        assert!(s.approve_proposal(p.id, None).is_err(), "두 번 눌러도 일정은 하나");
+        assert!(s.reject_proposal(p.id).is_err());
+        assert_eq!(s.list_events(0, 10_000).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn proposal_edits_rejects_and_checks() {
+        let s = Store::open_in_memory();
+        // 모양이 틀린 제안은 받지 않는다(AI 가 바로 안다).
+        assert!(s.add_proposal("x", &timed("거꾸로", 5, 1)).is_err());
+        // AI 가 비공개로 내도 비공개는 사람이 정한다.
+        let mut sneaky = timed("a", 0, 1);
+        sneaky.private = true;
+        assert!(!s.add_proposal("x", &sneaky).unwrap().event.private);
+        // 고쳐서 받기 — 고친 값이 들어가고, 고친 값도 검사한다.
+        let p = s.add_proposal("\u{1b}[31mclaude\n", &timed("치과", 1_000, 2_000)).unwrap();
+        assert_eq!(p.client, "[31mclaude", "제어 문자는 걷는다");
+        assert!(s.approve_proposal(p.id, Some(&timed("", 0, 1))).is_err());
+        assert_eq!(s.get_proposal(p.id).unwrap().unwrap().status, "pending", "검사에 걸리면 그대로 기다린다");
+        let e = s.approve_proposal(p.id, Some(&timed("치과 (옮김)", 3_000, 4_000))).unwrap();
+        assert_eq!(e.start_at, Some(3_000));
+        // 거절.
+        let q = s.add_proposal("x", &timed("b", 0, 1)).unwrap();
+        s.reject_proposal(q.id).unwrap();
+        assert!(s.approve_proposal(q.id, None).is_err());
+        let left: Vec<String> = s.pending_proposals().unwrap().into_iter().map(|p| p.event.title).collect();
+        assert_eq!(left, vec!["a"], "받은 것·거절한 것은 기다리는 목록에서 빠진다");
+    }
+
+    #[test]
+    fn proposals_cap_and_expire() {
+        let s = Store::open_in_memory();
+        for i in 0..PENDING_MAX {
+            s.add_proposal("x", &timed(&format!("p{i}"), 0, 1)).unwrap();
+        }
+        assert!(s.add_proposal("x", &timed("넘침", 0, 1)).is_err());
+        s.conn().execute("UPDATE proposals SET created_at = 0 WHERE title = 'p0'", []).unwrap();
+        assert_eq!(s.pending_proposals().unwrap().len() as i64, PENDING_MAX - 1, "한 주 지난 제안은 만료");
+        let old = s.get_proposal(1).unwrap().unwrap();
+        assert_eq!(old.status, "expired");
+        assert!(s.approve_proposal(old.id, None).is_err());
+        s.add_proposal("x", &timed("자리가 났다", 0, 1)).unwrap();
     }
 
     #[test]

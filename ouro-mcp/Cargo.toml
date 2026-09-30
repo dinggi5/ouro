@@ -1,0 +1,20 @@
+[package]
+name = "ouro-mcp"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+description = "Ouro MCP 사이드카 — AI 가 캘린더를 읽고 일정을 «제안» 한다(승인은 사람이 팝오버에서)"
+
+# 독립 크레이트: src-tauri 와 분리(Kura `kura-mcp` 와 같은 틀). DB 를 열지 않고 소켓으로 앱에 묻기만 하니
+# 의존성은 MCP·JSON·비동기 런타임뿐이다. 판단은 전부 앱(src-tauri/src/mcp.rs)에 있다.
+
+[dependencies]
+# MCP 공식 Rust SDK. Kura 와 같은 0.16 에 맞춘다 — 스키마 함정(plain_optional)을 이미 실측으로 풀어 둔 판.
+# 최신은 3.x(개발 4 시점) — 올릴 땐 도구 매크로·스키마 생성을 다시 실측할 것.
+rmcp = { version = "0.16", features = ["server", "macros", "transport-io"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "net", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+dirs = "6.0.0"
+anyhow = "1"

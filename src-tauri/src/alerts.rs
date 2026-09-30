@@ -243,6 +243,8 @@ mod tests {
             start_date: start_date.map(Into::into),
             end_date: start_date.map(|_| "2099-01-01".into()),
             alert_min: alert,
+            private: false,
+            origin: "user".into(),
             updated_at: 0,
         }
     }

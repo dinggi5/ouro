@@ -42,6 +42,7 @@ export function quickToDraft(q: QuickDraft, fallback: Draft): Draft {
     endDate: q.endDate,
     endTime: q.endTime ?? "10:00",
     alertMin: null,
+    private: false,
   };
 }
 
@@ -52,7 +53,7 @@ const REL = new Map([
   [2, "모레"],
 ]);
 
-function dayLabel(d: Date, today: Date): string {
+export function dayLabel(d: Date, today: Date): string {
   const days = Math.round((startOfDay(d).getTime() - today.getTime()) / 86_400_000);
   const year = d.getFullYear() === today.getFullYear() ? "" : `${d.getFullYear()}년 `;
   const base = `${year}${fmt.monthDay.format(d)} ${fmt.weekday.format(d)}`;

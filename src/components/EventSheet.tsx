@@ -18,6 +18,7 @@ type Draft = {
   endDate: string; // 화면 값 — 종일이면 포함
   endTime: string;
   alertMin: number | null;
+  private: boolean;
 };
 
 const HOUR = 60 * 60 * 1000;
@@ -35,6 +36,7 @@ export function blankDraft(day: Date, now: Date): Draft {
     endDate: ymd(end),
     endTime: hm(end),
     alertMin: null,
+    private: false,
   };
 }
 
@@ -50,6 +52,7 @@ function fromEvent(e: OuroEvent): Draft {
       endDate: ymd(endIncl),
       endTime: "10:00",
       alertMin: e.alertMin,
+      private: e.private,
     };
   }
   const s = new Date(e.startAt ?? 0);
@@ -63,6 +66,7 @@ function fromEvent(e: OuroEvent): Draft {
     endDate: ymd(x),
     endTime: hm(x),
     alertMin: e.alertMin,
+    private: e.private,
   };
 }
 
@@ -83,6 +87,7 @@ function toInput(d: Draft): EventInput | string {
       startDate: ymd(s),
       endDate: ymd(addDays(e, 1)),
       alertMin: d.alertMin,
+      private: d.private,
     };
   }
   const s = combine(d.startDate, d.startTime);
@@ -99,6 +104,7 @@ function toInput(d: Draft): EventInput | string {
     startDate: null,
     endDate: null,
     alertMin: d.alertMin,
+    private: d.private,
   };
 }
 
@@ -128,6 +134,7 @@ export function EventSheet({
   initial,
   editing,
   notice,
+  heading,
   onSave,
   onDelete,
   onClose,
@@ -136,6 +143,8 @@ export function EventSheet({
   editing: OuroEvent | null;
   /** 빠른 입력이 남긴 경고 — 시트 위에 그대로 보인다(왜 바로 안 넣었는지). */
   notice?: string[];
+  /** 머리 글자를 바꾼다(AI 제안을 고칠 때 «제안 고치기»). */
+  heading?: string;
   onSave: (input: EventInput) => Promise<string | null>;
   onDelete: () => void;
   onClose: () => void;
@@ -186,7 +195,7 @@ export function EventSheet({
         <button type="button" onClick={onClose} className="text-body-sm text-ink-secondary active:text-ink">
           취소
         </button>
-        <span className="text-label font-semibold">{editing ? "일정" : "새 일정"}</span>
+        <span className="text-label font-semibold">{heading ?? (editing ? "일정" : "새 일정")}</span>
         <span className="w-8" />
       </header>
 
@@ -230,7 +239,7 @@ export function EventSheet({
               setError(null);
               setD((cur) => shiftStart(cur, { startDate: e.target.value }));
             }}
-            className={`${field} num`}
+            className={`${field} num ${d.allDay ? "col-span-2" : ""}`}
           />
           {!d.allDay && (
             <input
@@ -248,7 +257,7 @@ export function EventSheet({
             type="date"
             value={d.endDate}
             onChange={(e) => set({ endDate: e.target.value })}
-            className={`${field} num`}
+            className={`${field} num ${d.allDay ? "col-span-2" : ""}`}
           />
           {!d.allDay && (
             <input
@@ -273,6 +282,16 @@ export function EventSheet({
               </option>
             ))}
           </select>
+        </label>
+
+        <label className="flex h-11 items-center justify-between">
+          <span className="text-body-sm">AI 에게 숨기기</span>
+          <input
+            type="checkbox"
+            checked={d.private}
+            onChange={(e) => set({ private: e.target.checked })}
+            className="switch"
+          />
         </label>
 
         <textarea

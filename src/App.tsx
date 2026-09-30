@@ -6,11 +6,14 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 import { DayList } from "./components/DayList";
 import { MonthGrid, monthGridRange } from "./components/MonthGrid";
 import { blankDraft, EventSheet, fromEvent, toInput, type Draft } from "./components/EventSheet";
+import { ProposalCard } from "./components/ProposalCard";
 import { QuickBar } from "./components/QuickBar";
+import { asEvent, proposalApi, type Proposal } from "./lib/proposals";
 import { api, errorText, eventsOn, type EventInput, type OuroEvent } from "./lib/events";
 import { canDirect, quickApi, quickToDraft, type QuickDraft } from "./lib/quick";
 import {
@@ -80,8 +83,16 @@ function title(view: View, cursor: Date): { main: string; sub: string } {
   return { main: fmt.yearMonth.format(cursor), sub: `${fmt.monthDay.format(cursor)} ${fmt.weekday.format(cursor)}` };
 }
 
-/** fromQuick = 빠른 입력에서 열린 시트 — 저장하면 입력칸을 비운다(취소하면 친 글이 남는다). */
-type Sheet = { draft: Draft; editing: OuroEvent | null; key: number; fromQuick?: boolean; notice?: string[] };
+/** fromQuick = 빠른 입력에서 열린 시트 — 저장하면 입력칸을 비운다(취소하면 친 글이 남는다).
+ *  proposalId = AI 제안을 고쳐서 넣는 시트 — 저장이 `approve_proposal` 로 간다. */
+type Sheet = {
+  draft: Draft;
+  editing: OuroEvent | null;
+  key: number;
+  fromQuick?: boolean;
+  notice?: string[];
+  proposalId?: number;
+};
 type Toast = { text: string; undo?: () => void; key: number };
 
 function App() {
@@ -96,6 +107,8 @@ function App() {
   const [toast, setToast] = useState<Toast | null>(null);
   const sheetKey = useRef(0);
   const [quickText, setQuickText] = useState("");
+  const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [proposalBusy, setProposalBusy] = useState(false);
   const quickRef = useRef<HTMLInputElement>(null);
 
   // 자정이 지나면 «오늘» 에 머물던 커서도 따라 넘어간다. 다른 날을 보고 있었다면 그대로 둔다.
@@ -132,6 +145,26 @@ function App() {
     return () => window.removeEventListener("focus", onFocus);
   }, [reload]);
 
+  // AI 제안. 새 제안이 오면 러스트가 팝오버를 띄우고 «proposals-changed» 를 보낸다 — 이미 떠 있던 팝오버엔 focus 가 안 오니 이벤트로 듣는다.
+  const loadProposals = useCallback(() => {
+    proposalApi.list().then(setProposals, () => {});
+  }, []);
+  useEffect(() => {
+    loadProposals();
+    window.addEventListener("focus", loadProposals);
+    let unlisten: (() => void) | null = null;
+    let alive = true;
+    listen("proposals-changed", loadProposals).then(
+      (u) => (alive ? (unlisten = u) : u()),
+      () => {},
+    );
+    return () => {
+      alive = false;
+      window.removeEventListener("focus", loadProposals);
+      unlisten?.();
+    };
+  }, [loadProposals]);
+
   const showToast = useCallback((text: string, undo?: () => void) => {
     setToast({ text, undo, key: Date.now() });
   }, []);
@@ -151,7 +184,13 @@ function App() {
 
   const save = async (input: EventInput): Promise<string | null> => {
     try {
-      const saved = sheet?.editing ? await api.update(sheet.editing.id, input) : await api.create(input);
+      const saved =
+        sheet?.proposalId !== undefined
+          ? await proposalApi.approve(sheet.proposalId, input)
+          : sheet?.editing
+            ? await api.update(sheet.editing.id, input)
+            : await api.create(input);
+      if (sheet?.proposalId !== undefined) loadProposals();
       if (sheet?.fromQuick) setQuickText("");
       setSheet(null);
       if (!sheet?.editing) reveal(saved);
@@ -191,6 +230,45 @@ function App() {
       showToast(errorText(e));
     }
   };
+
+  /** 제안 «넣기» — 그대로 일정으로. 되돌리기 = 만든 일정을 지운다(제안은 «넣음» 으로 남는다, 기록이라서). */
+  const approveProposal = async (p: Proposal) => {
+    setProposalBusy(true);
+    try {
+      const saved = await proposalApi.approve(p.id);
+      reveal(saved);
+      await reload();
+      showToast("넣었어요", async () => {
+        setToast(null);
+        try {
+          await api.remove(saved.id);
+          await reload();
+        } catch (err) {
+          showToast(errorText(err));
+        }
+      });
+    } catch (e) {
+      showToast(errorText(e));
+    } finally {
+      setProposalBusy(false);
+      loadProposals();
+    }
+  };
+
+  const rejectProposal = async (p: Proposal) => {
+    setProposalBusy(true);
+    try {
+      await proposalApi.reject(p.id);
+    } catch (e) {
+      showToast(errorText(e));
+    } finally {
+      setProposalBusy(false);
+      loadProposals();
+    }
+  };
+
+  const editProposal = (p: Proposal) =>
+    setSheet({ draft: fromEvent(asEvent(p)), editing: null, key: ++sheetKey.current, proposalId: p.id });
 
   const remove = async () => {
     const e = sheet?.editing;
@@ -298,6 +376,19 @@ function App() {
         </div>
       </header>
 
+      {proposals[0] && (
+        <ProposalCard
+          key={proposals[0].id}
+          proposal={proposals[0]}
+          total={proposals.length}
+          today={today}
+          busy={proposalBusy}
+          onApprove={() => void approveProposal(proposals[0])}
+          onEdit={() => editProposal(proposals[0])}
+          onReject={() => void rejectProposal(proposals[0])}
+        />
+      )}
+
       <section className="min-h-0 flex-1 overflow-y-auto px-5 pt-4 pb-5">
         {fatal ? (
           <Empty text={fatal} />
@@ -353,6 +444,7 @@ function App() {
             initial={sheet.draft}
             editing={sheet.editing}
             notice={sheet.notice}
+            heading={sheet.proposalId !== undefined ? "제안 고치기" : undefined}
             onSave={save}
             onDelete={() => void remove()}
             onClose={() => setSheet(null)}

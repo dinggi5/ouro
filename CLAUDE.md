@@ -6,7 +6,9 @@
   `.mcpb`·업데이트 파이프라인을 여기서 가져온다. 그 리포는 **읽기만** 한다.
 - 오픈소스(MIT) · macOS 26+ · 번들 id `com.dinggi5.ouro`.
 - 스택: Tauri 2 (확정). 캘린더는 **앱 자체 캘린더** — 일정·부탁·답 전부 `~/.ouro/ouro.db`(SQLite). 맥 기본 캘린더(EventKit)는 v0.2 이후 선택 기능.
-- MCP 사이드카는 DB 를 직접 열지 않는다 — 소켓으로 앱에 묻는다(쓰는 곳은 앱 하나).
+- MCP 사이드카(`ouro-mcp/`, 독립 크레이트)는 DB 를 직접 열지 않는다 — 소켓 `~/.ouro/ouro.sock` 으로 앱(`src-tauri/src/mcp.rs`)에 묻는다.
+  소켓엔 **승인 문이 없다** — AI 제안이 일정이 되는 길은 팝오버의 `approve_proposal` 하나.
+- `src-tauri` 를 빌드·테스트하기 전에 `./scripts/build-sidecars.sh` (externalBin 이라 사이드카 파일이 없으면 `cargo test` 도 실패한다).
 - 불변 규칙: 바깥에서 들어온 글(.ics·AI 답)은 부탁 문장이 될 수 없다 / AI 가 만든 부탁은 사람 승인 전엔 안 돈다 / 바깥으로 나간 원문은 저장한다.
 - 날짜 계산은 LLM 이 아니라 결정적 파서가 한다.
 - 원격: `backup` = 비공개 `dinggi5/ouro-dev`(`DEVLOG.md` 포함, 세션 끝에 `git push backup main`). `origin` 이라는 이름은 쓰지 않는다(사이드바 묶음 이름이 바뀐다).

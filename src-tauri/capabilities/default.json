@@ -1,7 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "팝오버 창의 코어 권한 — 없음. 앱 자체 커맨드(hide_popover 등)는 코어 권한과 별개로 열린다. 웹뷰는 AI 답·가져온 일정 같은 바깥 글을 그릴 곳이라, 쓰지 않는 창·트레이·메뉴 API 를 미리 열어 두지 않는다(core:default 뺌, 코덱스 개발 1). 프론트에서 코어 API 를 쓰게 되면 그 권한 하나씩만 더한다.",
-  "windows": ["main"],
-  "permissions": []
+  "description": "팝오버 창의 코어 권한 — 없음. 앱 자체 커맨드(hide_popover 등)는 코어 권한과 별개로 열린다. 웹뷰는 AI 답·가져온 일정 같은 바깥 글을 그릴 곳이라, 쓰지 않는 창·트레이·메뉴 API 를 미리 열어 두지 않는다(core:default 뺌, 코덱스 개발 1). 프론트에서 코어 API 를 쓰게 되면 그 권한 하나씩만 더한다. 개발 4: 새 AI 제안을 떠 있는 팝오버에 알리려고 이벤트 듣기(listen·unlisten) 둘만 연다 — 보내기(emit)는 안 연다.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
 }

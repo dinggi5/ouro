@@ -15,10 +15,14 @@ export type OuroEvent = {
   startDate: string | null;
   endDate: string | null;
   alertMin: number | null;
+  /** AI 에게 숨김 — MCP 로 안 나간다(PLAN §8). */
+  private: boolean;
+  /** user(팝오버) · mcp(AI 제안을 승인) · import */
+  origin: string;
   updatedAt: number;
 };
 
-export type EventInput = Omit<OuroEvent, "id" | "updatedAt">;
+export type EventInput = Omit<OuroEvent, "id" | "updatedAt" | "origin">;
 
 /** 알림 선택지(분 전) — `store.rs` 의 ALERT_CHOICES 와 같아야 한다. 종일 일정은 오전 9시 기준. */
 export const ALERTS_TIMED: { min: number | null; label: string }[] = [
