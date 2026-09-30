@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{Datelike, Days, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc, Weekday};
+use chrono::{DateTime, Datelike, Days, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Weekday};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -89,7 +89,7 @@ fn serve_one(conn: UnixStream, store: &Store, on_proposal: &OnProposal) {
     let (reply, proposed) = match serde_json::from_str::<Request>(&line) {
         Ok(req) => {
             let proposed = req.op == "propose";
-            match handle(store, &req, Local::now().naive_local()) {
+            match handle(store, &req, Local::now()) {
                 Ok(data) => (json!({ "ok": true, "data": data }), proposed),
                 Err(e) => (json!({ "ok": false, "error": e }), false),
             }
@@ -104,10 +104,12 @@ fn serve_one(conn: UnixStream, store: &Store, on_proposal: &OnProposal) {
 }
 
 /// 요청 하나 → 답(순수에 가깝다 — DB 와 «지금» 만 본다).
-fn handle(store: &Store, req: &Request, now: NaiveDateTime) -> Result<Value, String> {
+/// `now` 는 오프셋을 가진 순간이다 — 가을 서머타임의 두 번째 01:30 을 벽시계 글자로만 들고 있으면 첫 번째로 되돌아간다(코덱스 개발 4).
+fn handle(store: &Store, req: &Request, now_at: DateTime<Local>) -> Result<Value, String> {
+    let now = now_at.naive_local();
     let body = match req.op.as_str() {
         "agenda" => agenda(store, &req.args, now)?,
-        "free_time" => free_time(store, &req.args, now)?,
+        "free_time" => free_time(store, &req.args, now, now_at.timestamp_millis())?,
         "propose" => {
             let input = propose_input(&req.args)?;
             let p = store.add_proposal(&req.client, &input)?;
@@ -116,7 +118,7 @@ fn handle(store: &Store, req: &Request, now: NaiveDateTime) -> Result<Value, Str
         "proposal" => {
             let id = req.args.get("id").and_then(Value::as_i64).ok_or("id 가 필요해요")?;
             let p = store.get_proposal(id)?.ok_or("없는 제안이에요")?;
-            proposal_json(store, &p)?
+            proposal_status_json(store, &p)?
         }
         // 🔴 승인·거절·수정·삭제는 여기 없다 — 위 머리 주석.
         other => return Err(format!("모르는 요청이에요: {other}")),
@@ -250,7 +252,7 @@ fn hhmm(args: &Value, key: &str, default: NaiveTime) -> Result<NaiveTime, String
 
 /// 빈 시간 — 날마다 [day_start, day_end) 안에서 시각 일정이 없는 틈 중 `duration_minutes` 이상인 것.
 /// 오늘은 지금 이후만. 틈은 통째로 돌려준다(길이에 맞춰 자르지 않는다 — 고르는 건 AI 와 사람).
-fn free_time(store: &Store, args: &Value, now: NaiveDateTime) -> Result<Value, String> {
+fn free_time(store: &Store, args: &Value, now: NaiveDateTime, now_ms: i64) -> Result<Value, String> {
     let (from, to) = day_range(args, now, FREE_MAX_DAYS)?;
     let dur = args.get("duration_minutes").and_then(Value::as_i64).unwrap_or(30);
     if !(5..=24 * 60).contains(&dur) {
@@ -261,7 +263,6 @@ fn free_time(store: &Store, args: &Value, now: NaiveDateTime) -> Result<Value, S
     if de <= ds {
         return Err("day_end 가 day_start 보다 앞이에요".into());
     }
-    let now_ms = local_ms(now).unwrap_or_else(|_| Utc::now().timestamp_millis());
     let mut slots = Vec::new();
     let mut d = from;
     'days: while d <= to {
@@ -335,12 +336,14 @@ fn propose_input(args: &Value) -> Result<EventInput, String> {
         input.end_date = Some(end.format("%Y-%m-%d").to_string());
     } else {
         let st = parse_local(start)?;
-        let et = match s("end") {
-            Some(e) => parse_local(e)?,
-            None => st + chrono::Duration::hours(1),
+        let start_ms = local_ms(st)?;
+        // 끝이 없으면 **실제로** 한 시간 뒤(순간 + 1시간). 벽시계에 1시간을 더하면 서머타임 날에 없는 시각이 되거나 두 시간이 된다(코덱스 개발 4).
+        let end_ms = match s("end") {
+            Some(e) => local_ms(parse_local(e)?)?,
+            None => start_ms + 60 * MIN,
         };
-        input.start_at = Some(local_ms(st)?);
-        input.end_at = Some(local_ms(et)?);
+        input.start_at = Some(start_ms);
+        input.end_at = Some(end_ms);
     }
     Ok(input)
 }
@@ -377,6 +380,24 @@ fn proposal_json(store: &Store, p: &Proposal) -> Result<Value, String> {
     Ok(out)
 }
 
+/// `get_proposal` 의 답. 기다리는·거절·만료된 제안은 AI 가 보낸 그대로를 보여 주지만, **받은 뒤엔 실제 일정을 본다** —
+/// 사람이 고치며 «AI 에게 숨기기» 를 켰거나 지웠으면 내용은 안 나가고 상태만 나간다. 제안 번호는 순서대로라
+/// 다른 AI 가 번호를 짐작해 물을 수 있다(코덱스 개발 4) — 비공개로 받은 일정이 이 문으로 새지 않게.
+fn proposal_status_json(store: &Store, p: &Proposal) -> Result<Value, String> {
+    if p.status != "approved" {
+        return proposal_json(store, p);
+    }
+    let mut out = json!({ "proposal_id": p.id, "status": p.status });
+    match p.event_id.map(|id| store.get_event(id)).transpose()?.flatten() {
+        Some(e) if !e.private => {
+            out["event_id"] = json!(e.id);
+            out["event"] = event_json(&e);
+        }
+        _ => {}
+    }
+    Ok(out)
+}
+
 /// 제안과 겹치는 (AI 에게 보여도 되는) 일정 제목. 비공개는 «비공개 일정» 으로만.
 pub(crate) fn conflicts(store: &Store, e: &EventInput) -> Result<Vec<String>, String> {
     let (from, to) = match (e.start_at, e.end_at, e.start_date.as_deref(), e.end_date.as_deref()) {
@@ -397,8 +418,8 @@ pub(crate) fn conflicts(store: &Store, e: &EventInput) -> Result<Vec<String>, St
 mod tests {
     use super::*;
 
-    fn now() -> NaiveDateTime {
-        NaiveDate::from_ymd_opt(2026, 10, 1).unwrap().and_hms_opt(8, 0, 0).unwrap() // 목요일
+    fn now() -> DateTime<Local> {
+        Local.with_ymd_and_hms(2026, 10, 1, 8, 0, 0).earliest().unwrap() // 목요일
     }
 
     fn req(op: &str, args: Value) -> Request {
@@ -483,6 +504,35 @@ mod tests {
     }
 
     #[test]
+    fn approved_private_proposal_does_not_leak() {
+        let s = Store::open_in_memory();
+        let p = handle(&s, &req("propose", json!({"title":"정신과","start":"2026-10-02T15:00","notes":"상담"})), now()).unwrap();
+        let id = p["proposal_id"].as_i64().unwrap();
+        // 사람이 고쳐서 받으며 «AI 에게 숨기기» 를 켰다.
+        let mut edited = timed("정신과 상담", "2026-10-02T15:00", "2026-10-02T16:00", true);
+        edited.notes = "비밀".into();
+        s.approve_proposal(id, Some(&edited)).unwrap();
+        let q = handle(&s, &req("proposal", json!({"id": id})), now()).unwrap();
+        assert_eq!(q["status"], "approved");
+        assert!(!q.to_string().contains("정신과") && !q.to_string().contains("상담"), "{q}");
+        assert!(q.get("event_id").is_none());
+        // 숨기지 않고 받은 건 고친 실제 일정을 보여 준다.
+        let p2 = handle(&s, &req("propose", json!({"title":"치과","start":"2026-10-03T15:00"})), now()).unwrap();
+        let id2 = p2["proposal_id"].as_i64().unwrap();
+        s.approve_proposal(id2, Some(&timed("치과 (옮김)", "2026-10-03T16:00", "2026-10-03T17:00", false))).unwrap();
+        let q2 = handle(&s, &req("proposal", json!({"id": id2})), now()).unwrap();
+        assert_eq!(q2["event"]["title"], "치과 (옮김)");
+    }
+
+    #[test]
+    fn default_end_is_a_real_hour() {
+        let s = Store::open_in_memory();
+        let p = handle(&s, &req("propose", json!({"title":"x","start":"2026-10-02T15:00"})), now()).unwrap();
+        let e = s.get_proposal(p["proposal_id"].as_i64().unwrap()).unwrap().unwrap().event;
+        assert_eq!(e.end_at.unwrap() - e.start_at.unwrap(), 60 * MIN);
+    }
+
+    #[test]
     fn propose_rejects_bad_times() {
         let s = Store::open_in_memory();
         let bad = [
@@ -540,7 +590,7 @@ mod tests {
         let s = Store::open_in_memory();
         s.create_event(&timed("점심 전", "2026-10-01T09:00", "2026-10-01T12:00", false)).unwrap();
         s.create_event(&timed("오후", "2026-10-01T13:00", "2026-10-01T18:00", false)).unwrap();
-        let later = NaiveDate::from_ymd_opt(2026, 10, 1).unwrap().and_hms_opt(12, 10, 0).unwrap();
+        let later = Local.with_ymd_and_hms(2026, 10, 1, 12, 10, 0).earliest().unwrap();
         let out = handle(&s, &req("free_time", json!({"duration_minutes":30})), later).unwrap();
         assert_eq!(out["slots"], json!([{"start":"2026-10-01T12:10","end":"2026-10-01T13:00","weekday":"Thu","minutes":50}]));
         let out = handle(&s, &req("free_time", json!({"duration_minutes":60})), later).unwrap();

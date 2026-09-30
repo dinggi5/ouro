@@ -128,12 +128,17 @@ function App() {
   }, [nowMinute]);
 
   const [from, to] = useMemo(() => rangeOf(view, cursor), [view, cursor]);
+  // 늦게 온 답은 버린다 — 다른 날로 넘긴 뒤 앞 날의 느린 답이 목록을 덮지 않게(코덱스 개발 4). 제안도 같은 규칙.
+  const eventsSeq = useRef(0);
   const reload = useCallback(async () => {
+    const seq = ++eventsSeq.current;
     try {
-      setEvents(await api.list(from, to));
+      const list = await api.list(from, to);
+      if (seq !== eventsSeq.current) return;
+      setEvents(list);
       setFatal(null);
     } catch (e) {
-      setFatal(errorText(e));
+      if (seq === eventsSeq.current) setFatal(errorText(e));
     }
   }, [from, to]);
 
@@ -146,8 +151,12 @@ function App() {
   }, [reload]);
 
   // AI 제안. 새 제안이 오면 러스트가 팝오버를 띄우고 «proposals-changed» 를 보낸다 — 이미 떠 있던 팝오버엔 focus 가 안 오니 이벤트로 듣는다.
+  const proposalsSeq = useRef(0);
   const loadProposals = useCallback(() => {
-    proposalApi.list().then(setProposals, () => {});
+    const seq = ++proposalsSeq.current;
+    proposalApi.list().then((list) => {
+      if (seq === proposalsSeq.current) setProposals(list);
+    }, () => {});
   }, []);
   useEffect(() => {
     loadProposals();

@@ -19,6 +19,9 @@ type Draft = {
   endTime: string;
   alertMin: number | null;
   private: boolean;
+  /** 고치는 일정의 원래 순간. 날짜·시각 칸을 안 건드렸으면 이 값을 그대로 쓴다 — 가을 서머타임의 두 번째 01:30 은
+   *  «01:30» 글자만으론 첫 번째 01:30 으로 되돌아가, 제목만 고쳐도 일정이 한 시간 앞당겨진다(코덱스 개발 4). */
+  orig?: { startKey: string; startAt: number; endKey: string; endAt: number };
 };
 
 const HOUR = 60 * 60 * 1000;
@@ -57,7 +60,9 @@ function fromEvent(e: OuroEvent): Draft {
   }
   const s = new Date(e.startAt ?? 0);
   const x = new Date(e.endAt ?? 0);
+  const orig = { startKey: `${ymd(s)} ${hm(s)}`, startAt: s.getTime(), endKey: `${ymd(x)} ${hm(x)}`, endAt: x.getTime() };
   return {
+    orig,
     title: e.title,
     notes: e.notes,
     allDay: false,
@@ -90,8 +95,9 @@ function toInput(d: Draft): EventInput | string {
       private: d.private,
     };
   }
-  const s = combine(d.startDate, d.startTime);
-  const e = combine(d.endDate, d.endTime);
+  const o = d.orig;
+  const s = o && `${d.startDate} ${d.startTime}` === o.startKey ? new Date(o.startAt) : combine(d.startDate, d.startTime);
+  const e = o && `${d.endDate} ${d.endTime}` === o.endKey ? new Date(o.endAt) : combine(d.endDate, d.endTime);
   // 모양이 맞는데 null 이면 서머타임으로 건너뛰는 시각이다(time.ts combine).
   if (!s || !e) return "없는 시각이에요 — 날짜와 시각을 확인해 주세요";
   if (e < s) return "끝나는 시각이 시작보다 앞이에요";
