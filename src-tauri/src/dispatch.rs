@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::alerts::show_notification;
-use crate::errands::{title_of, Due, Outcome};
+use crate::errands::{title_of, Claim, Due, Outcome};
 use crate::store::{self, now_ms, Store};
 
 const MAX_NAP: Duration = Duration::from_secs(30);
@@ -40,7 +40,8 @@ pub(crate) type OnChange = Arc<dyn Fn() + Send + Sync>;
 
 enum Msg {
     Poke,
-    RunNow(i64),
+    /// (부탁, 누른 시각)
+    RunNow(i64, i64),
 }
 
 type Stops = Arc<Mutex<HashMap<i64, Arc<AtomicBool>>>>;
@@ -68,8 +69,21 @@ impl Dispatcher {
         if !lock(&self.queued).insert(id) {
             return false;
         }
-        let _ = self.tx.send(Msg::RunNow(id));
+        let _ = self.tx.send(Msg::RunNow(id, now_ms()));
         true
+    }
+
+    /// 앱을 끌 때 — 도는 실행을 전부 멈추고(프로세스 그룹째) 정리될 때까지 잠깐 기다린다. 안 하면 `claude` 가 앱보다 오래 산다.
+    pub(crate) fn shutdown(&self) {
+        for flag in lock(&self.stops).values() {
+            flag.store(true, Ordering::SeqCst);
+        }
+        for _ in 0..30 {
+            if lock(&self.stops).is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     /// 도는 실행을 멈춘다. 돌고 있었으면 true.
@@ -134,13 +148,27 @@ fn find_claude() -> Result<PathBuf, String> {
         return Ok(p);
     }
     // 로그인 셸의 PATH — nvm 같은 곳에 깔았을 때. 대화형(-i)은 rc 파일 잡음이 섞이니 마지막 «/» 로 시작하는 줄만 쓴다.
-    let out = Command::new("/bin/zsh")
+    let mut child = Command::new("/bin/zsh")
         .args(["-lic", "command -v claude"])
         .stdin(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .output()
+        .process_group(0)
+        .spawn()
         .map_err(|e| format!("Claude Code 를 찾는 중 셸을 못 띄웠어요: {e}"))?;
-    String::from_utf8_lossy(&out.stdout)
+    let out = drain(child.stdout.take().unwrap());
+    // rc 파일이 입력을 기다리며 멈출 수 있다 — 5초만 기다리고 접는다(코덱스 개발 5: 이 대기는 중단 버튼으로도 안 끊긴다).
+    let started = Instant::now();
+    while child.try_wait().ok().flatten().is_none() {
+        if started.elapsed() > Duration::from_secs(5) {
+            kill_group(child.id());
+            let _ = child.wait();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let stdout = String::from_utf8_lossy(&out.join().unwrap_or_default()).into_owned();
+    stdout
         .lines()
         .rev()
         .map(str::trim)
@@ -246,8 +274,17 @@ fn run_process(exe: &Path, args: &[String], prompt: &str, cwd: &Path, stop: &Ato
         }
         std::thread::sleep(Duration::from_millis(150));
     };
-    let stdout = String::from_utf8_lossy(&out.join().unwrap_or_default()).into_owned();
-    let stderr = String::from_utf8_lossy(&err.join().unwrap_or_default()).into_owned();
+    // 자식이 출력 파이프를 붙든 손주를 남기면 읽기가 안 끝난다 — 프로세스 그룹을 한 번 더 치고 3초만 기다린다(코덱스 개발 5).
+    kill_group(pid);
+    let collect = |h: std::thread::JoinHandle<Vec<u8>>| {
+        let t = Instant::now();
+        while !h.is_finished() && t.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if h.is_finished() { h.join().unwrap_or_default() } else { Vec::new() }
+    };
+    let stdout = String::from_utf8_lossy(&collect(out)).into_owned();
+    let stderr = String::from_utf8_lossy(&collect(err)).into_owned();
     if stopped {
         return Outcome { status: "stopped", exit_code: None, response: None, stderr: None, session_id: None };
     }
@@ -261,31 +298,31 @@ fn notify(title: &str, body: &str) {
     show_notification(title, body, || {});
 }
 
-/// 부탁 하나를 돌린다. `late_ms` = 예약보다 늦은 정도(수동 실행은 0).
-fn execute(store: &Store, dir: &Path, stops: &Stops, on_change: &OnChange, d: &Due, late_ms: i64) {
+/// 확보한 실행(`claim_run`)을 돌린다. `d` 는 **확보 시점의 현재 값**이다.
+fn execute(store: &Store, dir: &Path, stops: &Stops, on_change: &OnChange, run_id: i64, d: &Due) {
     let title = title_of(&d.prompt);
-    let run_id = match store.begin_run(d.id, &d.prompt, late_ms, None) {
-        Ok(id) => id,
-        Err(e) => return eprintln!("ouro: 실행 기록을 못 열었어요 — {e}"),
-    };
     let flag = Arc::new(AtomicBool::new(false));
     lock(stops).insert(run_id, flag.clone());
     on_change();
 
-    let outcome = match (find_claude(), store::create_private_dir(&dir.join("runs").join(d.id.to_string()))) {
+    let workdir = dir.join("runs").join(d.id.to_string());
+    let outcome = match (find_claude(), store::create_private_dir(&workdir)) {
         (Err(e), _) | (_, Err(e)) => Outcome { status: "failed", exit_code: None, response: None, stderr: Some(e), session_id: None },
-        (Ok(exe), Ok(())) => {
-            run_process(&exe, &claude_args(&d.allowed_tools), &d.prompt, &dir.join("runs").join(d.id.to_string()), &flag, RUN_TIMEOUT)
-        }
+        (Ok(exe), Ok(())) => run_process(&exe, &claude_args(&d.allowed_tools), &d.prompt, &workdir, &flag, RUN_TIMEOUT),
     };
-    if let Err(e) = store.finish_run(run_id, &outcome) {
-        eprintln!("ouro: 답을 못 적었어요 — {e}");
-    }
+    // 답을 못 적으면 몇 번 더 — 그래도 안 되면 «왔어요» 라고 하지 않는다(DB 에는 «도는 중» 이 남고 다음 켤 때 «끊김» 으로 닫힌다).
+    let saved = (0..3).any(|i| {
+        if i > 0 {
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        store.finish_run(run_id, &outcome).map_err(|e| eprintln!("ouro: 답을 못 적었어요 — {e}")).is_ok()
+    });
     lock(stops).remove(&run_id);
     on_change();
-    match outcome.status {
-        "done" => notify(&title, "답이 왔어요"),
-        "failed" => notify(&title, "부탁이 실패했어요 — 팝오버에서 확인해 주세요"),
+    match (saved, outcome.status) {
+        (false, _) => notify(&title, "답을 저장하지 못했어요 — 디스크를 확인해 주세요"),
+        (_, "done") => notify(&title, "답이 왔어요"),
+        (_, "failed") => notify(&title, "부탁이 실패했어요 — 팝오버에서 확인해 주세요"),
         _ => {}
     }
 }
@@ -302,37 +339,39 @@ pub(crate) fn start(store: Arc<Store>, dir: PathBuf, on_change: OnChange) -> Dis
     std::thread::Builder::new()
         .name("ouro-dispatch".into())
         .spawn(move || {
-            let mut manual: Vec<i64> = vec![];
+            let mut manual: Vec<(i64, i64)> = vec![];
+            let skip = |d: &Due, late_ms: i64| match decide(&d.late, late_ms) {
+                Decision::Run => None,
+                Decision::Skip(why) => Some(why),
+            };
             loop {
                 let now = now_ms();
                 while let Ok(m) = rx.try_recv() {
-                    if let Msg::RunNow(id) = m {
-                        manual.push(id);
+                    if let Msg::RunNow(id, at) = m {
+                        manual.push((id, at));
                     }
                 }
-                for id in manual.drain(..) {
+                for (id, since) in manual.drain(..) {
                     lock(&qd).remove(&id);
-                    if let (Ok(false), Ok(Some(d))) = (store.is_running(id), store.errand_for_run(id)) {
-                        execute(&store, &dir, &st, &on_change, &d, 0);
+                    if let Ok(Some((run_id, d, _))) = store.claim_run(id, Claim::Manual { since }, |_, _| None) {
+                        execute(&store, &dir, &st, &on_change, run_id, &d);
                     }
                 }
                 match store.due_errands(now) {
                     Ok(due) => {
                         for d in due {
-                            let late_ms = (now_ms() - d.start_at).max(0);
-                            match decide(&d.late, late_ms) {
-                                Decision::Skip(why) => {
-                                    if store.begin_run(d.id, &d.prompt, late_ms, Some(why)).is_ok() {
-                                        on_change();
-                                        notify(&title_of(&d.prompt), "건너뛰었어요 — 예약한 시각을 놓쳤어요");
-                                    }
+                            if store.runs_since(now_ms() - DAY_MS).unwrap_or(0) >= DAILY_CAP {
+                                break; // 상한 — 대기로 남겨 두고 다음 바퀴에 다시 본다
+                            }
+                            // 목록을 읽은 뒤 사람이 고치거나 지웠을 수 있다 — 확보할 때 현재 값으로 다시 읽는다.
+                            match store.claim_run(d.id, Claim::Scheduled, skip) {
+                                Ok(Some((_, cur, true))) => {
+                                    on_change();
+                                    notify(&title_of(&cur.prompt), "건너뛰었어요 — 예약한 시각을 놓쳤어요");
                                 }
-                                Decision::Run => {
-                                    if store.runs_since(now_ms() - DAY_MS).unwrap_or(0) >= DAILY_CAP {
-                                        break; // 상한 — 대기로 남겨 두고 다음 바퀴에 다시 본다
-                                    }
-                                    execute(&store, &dir, &st, &on_change, &d, late_ms);
-                                }
+                                Ok(Some((run_id, cur, false))) => execute(&store, &dir, &st, &on_change, run_id, &cur),
+                                Ok(None) => {}
+                                Err(e) => eprintln!("ouro: 실행 확보 실패 — {e}"),
                             }
                         }
                     }
@@ -343,7 +382,7 @@ pub(crate) fn start(store: Arc<Store>, dir: PathBuf, on_change: OnChange) -> Dis
                     _ => MAX_NAP,
                 };
                 match rx.recv_timeout(nap) {
-                    Ok(Msg::RunNow(id)) => manual.push(id),
+                    Ok(Msg::RunNow(id, at)) => manual.push((id, at)),
                     Ok(Msg::Poke) | Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => break,
                 }
@@ -431,6 +470,16 @@ mod tests {
         let o = run_process(&exe, &[], "x", d.path(), &stop, Duration::from_secs(60));
         assert_eq!(o.status, "stopped");
         assert!(t.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn grandchild_holding_the_pipe_does_not_hang_the_worker() {
+        let d = tempfile::tempdir().unwrap();
+        let exe = script(d.path(), r#"cat >/dev/null; sleep 30 & printf '{"result":"ok"}'"#);
+        let t = Instant::now();
+        let o = run_process(&exe, &[], "x", d.path(), &AtomicBool::new(false), Duration::from_secs(60));
+        assert_eq!(o.response.as_deref(), Some("ok"));
+        assert!(t.elapsed() < Duration::from_secs(8), "출력 파이프를 붙든 손주가 일꾼을 막지 않는다");
     }
 
     #[test]

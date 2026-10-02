@@ -77,6 +77,8 @@ export function ErrandSheet({
   const [busy, setBusy] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
   const viewing = !!errand?.run;
+  // 고치는 중이면 «지금 실행» 은 막는다 — 실행은 저장된 문장으로 나가니 화면의 문장과 어긋난다(코덱스 개발 5).
+  const dirty = JSON.stringify(d) !== JSON.stringify(initial);
 
   useEffect(() => {
     if (viewing) return;
@@ -250,7 +252,13 @@ export function ErrandSheet({
               <button type="button" onClick={onDelete} className={`${ghost} text-danger`}>
                 삭제
               </button>
-              <button type="button" disabled={busy} onClick={() => void guard(onRunNow)} className={`${ghost} text-ink`}>
+              <button
+                type="button"
+                disabled={busy || dirty}
+                title={dirty ? "고친 내용을 먼저 저장해 주세요" : undefined}
+                onClick={() => void guard(onRunNow)}
+                className={`${ghost} text-ink`}
+              >
                 지금 실행
               </button>
             </>

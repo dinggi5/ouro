@@ -80,6 +80,13 @@ pub(crate) struct Due {
     pub start_at: i64,
 }
 
+/// 실행 권리를 어떤 길로 얻나. 수동은 «요청한 뒤 다른 실행이 시작하지 않았을 때만».
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Claim {
+    Scheduled,
+    Manual { since: i64 },
+}
+
 /// 실행이 끝난 모양.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Outcome {
@@ -312,29 +319,96 @@ impl Store {
             .map_err(|e| e.to_string())
     }
 
-    /// 실행 기록을 연다. `sent_text` = 바깥으로 나가는 원문 그대로. 건너뜀은 `skipped` + 이유(`note`)로 바로 닫는다.
+    /// 실행할 권리를 **한 트랜잭션**으로 확보한다(코덱스 개발 5): 지금 DB 의 부탁을 다시 읽어 — 지워졌거나 승인이 없거나,
+    /// 예약 실행인데 이미 돌았으면(또는 수동 요청 뒤에 다른 실행이 시작했으면) `None` — 그 값으로 실행 기록을 연다.
+    /// 대기하는 동안 사람이 고치거나 지운 부탁이 옛 문장으로 나가지 않게 하는 문이다. `sent_text` = 지금 문장 그대로.
+    /// `skip` 이 이유를 돌려주면 돌리지 않고 «건너뜀» 으로 바로 닫는다. 돌려주는 bool = 건너뜀 여부.
+    pub(crate) fn claim_run(
+        &self,
+        id: i64,
+        claim: Claim,
+        skip: impl Fn(&Due, i64) -> Option<&'static str>,
+    ) -> Result<Option<(i64, Due, bool)>, String> {
+        let now = now_ms();
+        let mut conn = self.conn();
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let due = tx
+            .query_row(
+                "SELECT i.id, e.prompt, e.allowed_tools, e.late, i.start_at
+                 FROM items i JOIN errands e ON e.item_id = i.id
+                 WHERE i.id = ?1 AND i.kind = 'errand' AND i.deleted_at IS NULL AND e.approved_at IS NOT NULL",
+                [id],
+                |r| Ok(Due { id: r.get(0)?, prompt: r.get(1)?, allowed_tools: r.get(2)?, late: r.get(3)?, start_at: r.get(4)? }),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let Some(due) = due else { return Ok(None) };
+        let (running, any_since, any): (bool, bool, bool) = tx
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM runs WHERE item_id = ?1 AND status = 'running'),
+                        EXISTS (SELECT 1 FROM runs WHERE item_id = ?1 AND started_at >= ?2),
+                        EXISTS (SELECT 1 FROM runs WHERE item_id = ?1)",
+                params![id, if let Claim::Manual { since } = claim { since } else { i64::MAX }],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(|e| e.to_string())?;
+        let late_ms = match claim {
+            Claim::Scheduled => {
+                if any || due.start_at > now {
+                    return Ok(None);
+                }
+                (now - due.start_at).max(0)
+            }
+            Claim::Manual { .. } => {
+                if running || any_since {
+                    return Ok(None);
+                }
+                0
+            }
+        };
+        let reason = if matches!(claim, Claim::Scheduled) { skip(&due, late_ms) } else { None };
+        tx.execute(
+            "INSERT INTO runs (item_id, started_at, finished_at, sent_text, status, late_ms, stderr)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                id,
+                now,
+                reason.map(|_| now),
+                due.prompt,
+                if reason.is_some() { "skipped" } else { "running" },
+                late_ms,
+                reason
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let run_id = tx.last_insert_rowid();
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(Some((run_id, due, reason.is_some())))
+    }
+
+    /// 테스트용 얇은 문 — 기록 한 줄을 그냥 연다.
+    #[cfg(test)]
     pub(crate) fn begin_run(&self, item_id: i64, sent_text: &str, late_ms: i64, skipped: Option<&str>) -> Result<i64, String> {
         let now = now_ms();
         let conn = self.conn();
         conn.execute(
             "INSERT INTO runs (item_id, started_at, finished_at, sent_text, status, late_ms, stderr)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                item_id,
-                now,
-                skipped.map(|_| now),
-                sent_text,
-                if skipped.is_some() { "skipped" } else { "running" },
-                late_ms.max(0),
-                skipped
-            ],
+            params![item_id, now, skipped.map(|_| now), sent_text, if skipped.is_some() { "skipped" } else { "running" }, late_ms.max(0), skipped],
         )
         .map_err(|e| e.to_string())?;
         Ok(conn.last_insert_rowid())
     }
 
     pub(crate) fn finish_run(&self, run_id: i64, o: &Outcome) -> Result<(), String> {
-        let response = o.response.as_deref().map(|s| s.chars().take(RESPONSE_MAX).collect::<String>());
+        // 너무 긴 답은 자르되 «잘렸다» 를 글에 남긴다 — 완전한 답처럼 읽히지 않게(코덱스 개발 5).
+        let response = o.response.as_deref().map(|s| {
+            if s.chars().count() > RESPONSE_MAX {
+                format!("{}\n\n… (너무 길어서 여기까지만 저장했어요)", s.chars().take(RESPONSE_MAX).collect::<String>())
+            } else {
+                s.to_string()
+            }
+        });
         let stderr = o.stderr.as_deref().filter(|s| !s.trim().is_empty()).map(|s| tail(s.trim(), STDERR_MAX));
         self.conn()
             .execute(
@@ -471,6 +545,47 @@ mod tests {
         s.delete_errand(e.id).unwrap();
         assert!(s.get_errand(e.id).unwrap().is_none());
         assert_eq!(s.restore_errand(e.id).unwrap().id, e.id);
+    }
+
+    #[test]
+    fn claim_uses_current_values_and_refuses_stale_or_double() {
+        let s = Store::open_in_memory();
+        let none = |_: &Due, _: i64| None;
+        let e = s.create_errand(&input("옛 문장", 1_000)).unwrap();
+        // 대기하는 동안 고쳤다 → 확보하면 «지금» 문장이 나가고 기록에도 그게 남는다.
+        s.update_errand(e.id, &input("고친 문장", 1_000)).unwrap();
+        let (run, due, skipped) = s.claim_run(e.id, Claim::Scheduled, none).unwrap().unwrap();
+        assert_eq!((due.prompt.as_str(), skipped), ("고친 문장", false));
+        assert_eq!(s.get_errand(e.id).unwrap().unwrap().run.unwrap().sent_text, "고친 문장");
+        // 이미 돈 부탁은 예약으로 또 못 잡고, 도는 중이거나 «요청 뒤 이미 시작» 이면 수동도 못 잡는다.
+        assert!(s.claim_run(e.id, Claim::Scheduled, none).unwrap().is_none());
+        assert!(s.claim_run(e.id, Claim::Manual { since: 0 }, none).unwrap().is_none(), "도는 중");
+        s.finish_run(run, &Outcome { status: "done", exit_code: Some(0), response: Some("x".into()), stderr: None, session_id: None }).unwrap();
+        assert!(s.claim_run(e.id, Claim::Manual { since: 0 }, none).unwrap().is_none(), "요청 뒤에 이미 돌았다");
+        assert!(s.claim_run(e.id, Claim::Manual { since: now_ms() + 10_000 }, none).unwrap().is_some(), "다시 실행");
+        // 지운 부탁·승인 없는 부탁은 못 잡는다.
+        let d = s.create_errand(&input("지울 것", 1_000)).unwrap();
+        s.delete_errand(d.id).unwrap();
+        assert!(s.claim_run(d.id, Claim::Scheduled, none).unwrap().is_none());
+        let u = s.create_errand(&input("승인 전", 1_000)).unwrap();
+        s.conn().execute("UPDATE errands SET approved_at = NULL WHERE item_id = ?1", [u.id]).unwrap();
+        assert!(s.claim_run(u.id, Claim::Scheduled, none).unwrap().is_none());
+        // 건너뜀 판단은 확보와 같은 트랜잭션 — 기록만 남고 돌지 않는다.
+        let k = s.create_errand(&input("놓친 것", 1_000)).unwrap();
+        let (_, _, skipped) = s.claim_run(k.id, Claim::Scheduled, |_, _| Some("놓침")).unwrap().unwrap();
+        assert!(skipped);
+        assert_eq!(s.get_errand(k.id).unwrap().unwrap().run.unwrap().status, "skipped");
+    }
+
+    #[test]
+    fn long_answer_is_marked_truncated() {
+        let s = Store::open_in_memory();
+        let e = s.create_errand(&input("q", 1)).unwrap();
+        let run = s.begin_run(e.id, "q", 0, None).unwrap();
+        let o = Outcome { status: "done", exit_code: Some(0), response: Some("가".repeat(RESPONSE_MAX + 5)), stderr: None, session_id: None };
+        s.finish_run(run, &o).unwrap();
+        let r = s.get_errand(e.id).unwrap().unwrap().run.unwrap().response.unwrap();
+        assert!(r.ends_with("저장했어요)") && r.chars().count() < RESPONSE_MAX + 50);
     }
 
     #[test]

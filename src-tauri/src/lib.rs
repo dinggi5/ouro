@@ -35,6 +35,8 @@ struct Core {
     alerts: alerts::Alerts,
     dispatcher: dispatch::Dispatcher,
     dir: std::path::PathBuf,
+    /// 한 데이터 폴더에 앱 하나만 — 프로세스가 사는 동안 쥔다.
+    _instance: std::fs::File,
 }
 
 type CoreState = Result<Core, String>;
@@ -43,8 +45,26 @@ fn core<'a>(state: &'a State<'_, CoreState>) -> Result<&'a Core, String> {
     state.inner().as_ref().map_err(Clone::clone)
 }
 
+/// 같은 데이터 폴더를 쓰는 앱이 둘 뜨면 디스패처가 둘이라 같은 부탁이 두 번 돌고, 한쪽이 다른 쪽의 실행을 «끊김» 으로 닫는다
+/// (코덱스 개발 5). DB 를 열기 **전에** 배타 잠금을 잡는다. 프로세스가 죽으면 OS 가 풀어 준다.
+fn lock_instance(dir: &std::path::Path) -> Result<std::fs::File, String> {
+    use std::os::unix::io::AsRawFd;
+    store::create_private_dir(dir)?;
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("ouro.lock"))
+        .map_err(|e| format!("잠금 파일을 못 열었어요: {e}"))?;
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err("다른 Ouro 가 이미 떠 있어요 — 메뉴바의 ◯ 를 눌러 주세요".into());
+    }
+    Ok(f)
+}
+
 fn open_core(app: &tauri::AppHandle) -> CoreState {
     let dir = store::data_dir().ok_or("홈 폴더를 찾지 못했어요")?;
+    let _instance = lock_instance(&dir)?;
     let store = Arc::new(Store::open(&dir)?);
     let alerts = alerts::start(store.clone(), dir.join("backup"));
     let handle = app.clone();
@@ -55,7 +75,7 @@ fn open_core(app: &tauri::AppHandle) -> CoreState {
             let _ = handle.emit("errands-changed", ());
         }),
     );
-    Ok(Core { store, alerts, dispatcher, dir, presence: Arc::default() })
+    Ok(Core { store, alerts, dispatcher, dir, presence: Arc::default(), _instance })
 }
 
 /// 부탁 — 예약 시각이 창 [from, to) 인 것과 각자의 최근 실행(상태·답).
@@ -307,6 +327,12 @@ pub fn run() {
             // (applicationShouldHandleReopen) — 트레이가 노치 뒤에 숨었을 때의 두 번째 길.
             if let tauri::RunEvent::Reopen { .. } = event {
                 tray::show(app);
+            }
+            // 끌 때 도는 `claude` 가 앱보다 오래 살지 않게 먼저 멈춘다(코덱스 개발 5).
+            if let tauri::RunEvent::Exit = event {
+                if let Ok(c) = app.state::<CoreState>().inner().as_ref() {
+                    c.dispatcher.shutdown();
+                }
             }
         });
 }
