@@ -346,7 +346,7 @@ impl Store {
         let (running, any_since, any): (bool, bool, bool) = tx
             .query_row(
                 "SELECT EXISTS (SELECT 1 FROM runs WHERE item_id = ?1 AND status = 'running'),
-                        EXISTS (SELECT 1 FROM runs WHERE item_id = ?1 AND started_at >= ?2),
+                        EXISTS (SELECT 1 FROM runs WHERE item_id = ?1 AND started_at >= ?2 AND status != 'skipped'),
                         EXISTS (SELECT 1 FROM runs WHERE item_id = ?1)",
                 params![id, if let Claim::Manual { since } = claim { since } else { i64::MAX }],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
@@ -570,6 +570,10 @@ mod tests {
         let u = s.create_errand(&input("승인 전", 1_000)).unwrap();
         s.conn().execute("UPDATE errands SET approved_at = NULL WHERE item_id = ?1", [u.id]).unwrap();
         assert!(s.claim_run(u.id, Claim::Scheduled, none).unwrap().is_none());
+        // 요청 뒤에 «건너뜀» 기록만 생겼다면 실제로 돈 게 아니니 수동 요청은 살아 있다.
+        let m = s.create_errand(&input("수동", 1_000)).unwrap();
+        s.begin_run(m.id, "수동", 0, Some("건너뜀")).unwrap();
+        assert!(s.claim_run(m.id, Claim::Manual { since: 0 }, none).unwrap().is_some());
         // 건너뜀 판단은 확보와 같은 트랜잭션 — 기록만 남고 돌지 않는다.
         let k = s.create_errand(&input("놓친 것", 1_000)).unwrap();
         let (_, _, skipped) = s.claim_run(k.id, Claim::Scheduled, |_, _| Some("놓침")).unwrap().unwrap();

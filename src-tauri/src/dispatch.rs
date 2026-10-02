@@ -52,6 +52,8 @@ pub(crate) struct Dispatcher {
     stops: Stops,
     /// «지금 실행» 으로 줄에 선 부탁 — 두 번 눌러도 한 번만.
     queued: Arc<Mutex<HashSet<i64>>>,
+    /// 끄는 중 — 새 실행을 시작하지 않는다.
+    closing: Arc<AtomicBool>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -75,6 +77,7 @@ impl Dispatcher {
 
     /// 앱을 끌 때 — 도는 실행을 전부 멈추고(프로세스 그룹째) 정리될 때까지 잠깐 기다린다. 안 하면 `claude` 가 앱보다 오래 산다.
     pub(crate) fn shutdown(&self) {
+        self.closing.store(true, Ordering::SeqCst);
         for flag in lock(&self.stops).values() {
             flag.store(true, Ordering::SeqCst);
         }
@@ -167,7 +170,8 @@ fn find_claude() -> Result<PathBuf, String> {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    let stdout = String::from_utf8_lossy(&out.join().unwrap_or_default()).into_owned();
+    kill_group(child.id()); // 셸이 끝난 뒤 남은 손주가 파이프를 붙들지 않게
+    let stdout = String::from_utf8_lossy(&out.finish(Duration::from_secs(2))).into_owned();
     stdout
         .lines()
         .rev()
@@ -204,18 +208,39 @@ fn parse_output(stdout: &str, stderr: &str, exit_code: Option<i32>) -> Outcome {
     Outcome { status: "failed", exit_code, response: None, stderr: Some(why), session_id }
 }
 
-fn drain(mut r: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
-    std::thread::spawn(move || {
-        let (mut buf, mut chunk) = (Vec::new(), [0u8; 8192]);
+/// 파이프 읽기. 끝나길 `finish` 가 기다리되 시간이 지나면 **그때까지 받은 것**을 돌려준다(코덱스 개발 5 — 분리된 손주가 파이프를
+/// 붙들어도 정상 답을 버리지 않고, 일꾼도 안 막힌다).
+struct Drain {
+    buf: Arc<Mutex<Vec<u8>>>,
+    handle: std::thread::JoinHandle<()>,
+}
+
+fn drain(mut r: impl Read + Send + 'static) -> Drain {
+    let buf: Arc<Mutex<Vec<u8>>> = Arc::default();
+    let b = buf.clone();
+    let handle = std::thread::spawn(move || {
+        let mut chunk = [0u8; 8192];
         while let Ok(n) = r.read(&mut chunk) {
             if n == 0 {
                 break;
             }
-            let room = OUTPUT_CAP.saturating_sub(buf.len());
-            buf.extend_from_slice(&chunk[..n.min(room)]);
+            let mut g = lock(&b);
+            let room = OUTPUT_CAP.saturating_sub(g.len());
+            g.extend_from_slice(&chunk[..n.min(room)]);
         }
-        buf
-    })
+    });
+    Drain { buf, handle }
+}
+
+impl Drain {
+    fn finish(self, wait: Duration) -> Vec<u8> {
+        let t = Instant::now();
+        while !self.handle.is_finished() && t.elapsed() < wait {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let v = lock(&self.buf).clone();
+        v
+    }
 }
 
 fn kill_group(pid: u32) {
@@ -276,15 +301,8 @@ fn run_process(exe: &Path, args: &[String], prompt: &str, cwd: &Path, stop: &Ato
     };
     // 자식이 출력 파이프를 붙든 손주를 남기면 읽기가 안 끝난다 — 프로세스 그룹을 한 번 더 치고 3초만 기다린다(코덱스 개발 5).
     kill_group(pid);
-    let collect = |h: std::thread::JoinHandle<Vec<u8>>| {
-        let t = Instant::now();
-        while !h.is_finished() && t.elapsed() < Duration::from_secs(3) {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        if h.is_finished() { h.join().unwrap_or_default() } else { Vec::new() }
-    };
-    let stdout = String::from_utf8_lossy(&collect(out)).into_owned();
-    let stderr = String::from_utf8_lossy(&collect(err)).into_owned();
+    let stdout = String::from_utf8_lossy(&out.finish(Duration::from_secs(3))).into_owned();
+    let stderr = String::from_utf8_lossy(&err.finish(Duration::from_secs(3))).into_owned();
     if stopped {
         return Outcome { status: "stopped", exit_code: None, response: None, stderr: None, session_id: None };
     }
@@ -299,10 +317,14 @@ fn notify(title: &str, body: &str) {
 }
 
 /// 확보한 실행(`claim_run`)을 돌린다. `d` 는 **확보 시점의 현재 값**이다.
-fn execute(store: &Store, dir: &Path, stops: &Stops, on_change: &OnChange, run_id: i64, d: &Due) {
+fn execute(store: &Store, dir: &Path, stops: &Stops, closing: &AtomicBool, on_change: &OnChange, run_id: i64, d: &Due) {
     let title = title_of(&d.prompt);
+    // 끄는 중에 막 시작한 실행은 시작하자마자 멈춘다 — `shutdown` 이 못 본 플래그가 없게(코덱스 개발 5 2차).
     let flag = Arc::new(AtomicBool::new(false));
     lock(stops).insert(run_id, flag.clone());
+    if closing.load(Ordering::SeqCst) {
+        flag.store(true, Ordering::SeqCst);
+    }
     on_change();
 
     let workdir = dir.join("runs").join(d.id.to_string());
@@ -335,7 +357,8 @@ pub(crate) fn start(store: Arc<Store>, dir: PathBuf, on_change: OnChange) -> Dis
     let (tx, rx) = mpsc::channel::<Msg>();
     let stops: Stops = Arc::default();
     let queued: Arc<Mutex<HashSet<i64>>> = Arc::default();
-    let (st, qd) = (stops.clone(), queued.clone());
+    let closing = Arc::new(AtomicBool::new(false));
+    let (st, qd, cl) = (stops.clone(), queued.clone(), closing.clone());
     std::thread::Builder::new()
         .name("ouro-dispatch".into())
         .spawn(move || {
@@ -353,15 +376,23 @@ pub(crate) fn start(store: Arc<Store>, dir: PathBuf, on_change: OnChange) -> Dis
                 }
                 for (id, since) in manual.drain(..) {
                     lock(&qd).remove(&id);
+                    if cl.load(Ordering::SeqCst) {
+                        continue;
+                    }
                     if let Ok(Some((run_id, d, _))) = store.claim_run(id, Claim::Manual { since }, |_, _| None) {
-                        execute(&store, &dir, &st, &on_change, run_id, &d);
+                        execute(&store, &dir, &st, &cl, &on_change, run_id, &d);
                     }
                 }
                 match store.due_errands(now) {
                     Ok(due) => {
                         for d in due {
-                            if store.runs_since(now_ms() - DAY_MS).unwrap_or(0) >= DAILY_CAP {
-                                break; // 상한 — 대기로 남겨 두고 다음 바퀴에 다시 본다
+                            if cl.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            // 상한이면 «돌 것» 만 대기로 남긴다 — 건너뛸 부탁은 상한과 무관하게 기록을 남겨야 대기로 영영 안 묵는다(코덱스 개발 5 2차).
+                            let capped = store.runs_since(now_ms() - DAY_MS).unwrap_or(0) >= DAILY_CAP;
+                            if capped && decide(&d.late, (now_ms() - d.start_at).max(0)) == Decision::Run {
+                                continue;
                             }
                             // 목록을 읽은 뒤 사람이 고치거나 지웠을 수 있다 — 확보할 때 현재 값으로 다시 읽는다.
                             match store.claim_run(d.id, Claim::Scheduled, skip) {
@@ -369,7 +400,7 @@ pub(crate) fn start(store: Arc<Store>, dir: PathBuf, on_change: OnChange) -> Dis
                                     on_change();
                                     notify(&title_of(&cur.prompt), "건너뛰었어요 — 예약한 시각을 놓쳤어요");
                                 }
-                                Ok(Some((run_id, cur, false))) => execute(&store, &dir, &st, &on_change, run_id, &cur),
+                                Ok(Some((run_id, cur, false))) => execute(&store, &dir, &st, &cl, &on_change, run_id, &cur),
                                 Ok(None) => {}
                                 Err(e) => eprintln!("ouro: 실행 확보 실패 — {e}"),
                             }
@@ -389,7 +420,7 @@ pub(crate) fn start(store: Arc<Store>, dir: PathBuf, on_change: OnChange) -> Dis
             }
         })
         .expect("디스패처 스레드를 띄우지 못했어요");
-    Dispatcher { tx, stops, queued }
+    Dispatcher { tx, stops, queued, closing }
 }
 
 #[cfg(test)]
@@ -522,7 +553,7 @@ mod tests {
     #[test]
     fn run_now_twice_queues_once() {
         let (tx, rx) = mpsc::channel();
-        let d = Dispatcher { tx, stops: Arc::default(), queued: Arc::default() };
+        let d = Dispatcher { tx, stops: Arc::default(), queued: Arc::default(), closing: Arc::default() };
         assert!(d.run_now(7));
         assert!(!d.run_now(7), "두 번 눌러도 한 번");
         assert!(d.run_now(8));
