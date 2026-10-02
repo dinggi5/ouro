@@ -117,7 +117,7 @@ fn notice(e: &Event, now: i64) -> (String, String) {
 }
 
 /// 알림을 띄운다. 실패하면(osascript 를 못 띄우거나 오류로 끝나면) `on_fail` — 끝나길 기다리는 스레드에서 부른다.
-fn show_notification(title: &str, body: &str, on_fail: impl FnOnce() + Send + 'static) {
+pub(crate) fn show_notification(title: &str, body: &str, on_fail: impl FnOnce() + Send + 'static) {
     // AppleScript 문자열 리터럴 이스케이프 — 제목은 사용자(앞으로는 MCP·가져오기)가 쓴 글이라 스크립트 주입을 막는다.
     let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
     let script = format!(

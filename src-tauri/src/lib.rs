@@ -5,11 +5,15 @@
 //   store   ~/.ouro/ouro.db — 일정·부탁·실행 (개발 2)
 //   alerts  일정 알림 + 매일 백업을 도는 시계 스레드 (개발 2)
 //   parse   빠른 입력 규칙 파서 «내일 3시 치과» → 초안 (개발 3)
+//   errands 부탁 저장·실행 기록 (개발 5)
+//   dispatch 때가 된 부탁을 `claude -p` 로 보내고 답을 적는 일꾼 (개발 5)
 //   mcp     MCP 사이드카가 묻는 소켓 — 읽기·제안만, 승인은 팝오버에서 (개발 4)
 //
 // 이 파일에는 앱 셸만 둔다: 커맨드(프론트가 부르는 문) + run(). 판단은 전부 모듈에 있다.
 
 mod alerts;
+mod dispatch;
+mod errands;
 mod mcp;
 mod parse;
 mod store;
@@ -17,6 +21,7 @@ mod tray;
 
 use std::sync::Arc;
 
+use errands::{Errand, ErrandInput};
 use parse::{Draft, Engine, Miss};
 use serde::Serialize;
 use store::{Event, EventInput, Proposal, Store};
@@ -28,6 +33,7 @@ struct Core {
     store: Arc<Store>,
     presence: Arc<mcp::Presence>,
     alerts: alerts::Alerts,
+    dispatcher: dispatch::Dispatcher,
     dir: std::path::PathBuf,
 }
 
@@ -37,11 +43,85 @@ fn core<'a>(state: &'a State<'_, CoreState>) -> Result<&'a Core, String> {
     state.inner().as_ref().map_err(Clone::clone)
 }
 
-fn open_core() -> CoreState {
+fn open_core(app: &tauri::AppHandle) -> CoreState {
     let dir = store::data_dir().ok_or("홈 폴더를 찾지 못했어요")?;
     let store = Arc::new(Store::open(&dir)?);
     let alerts = alerts::start(store.clone(), dir.join("backup"));
-    Ok(Core { store, alerts, dir, presence: Arc::default() })
+    let handle = app.clone();
+    let dispatcher = dispatch::start(
+        store.clone(),
+        dir.clone(),
+        Arc::new(move || {
+            let _ = handle.emit("errands-changed", ());
+        }),
+    );
+    Ok(Core { store, alerts, dispatcher, dir, presence: Arc::default() })
+}
+
+/// 부탁 — 예약 시각이 창 [from, to) 인 것과 각자의 최근 실행(상태·답).
+#[tauri::command]
+fn list_errands(state: State<'_, CoreState>, from: i64, to: i64) -> Result<Vec<Errand>, String> {
+    core(&state)?.store.list_errands(from, to)
+}
+
+/// 사람이 쓴 부탁을 만든다. 🔴 지금 부탁이 생기는 길은 이것뿐이다 — 문장은 사람이 쓴 것(AI 답·일정 글이 아니다).
+#[tauri::command]
+fn create_errand(state: State<'_, CoreState>, input: ErrandInput) -> Result<Errand, String> {
+    let c = core(&state)?;
+    let e = c.store.create_errand(&input)?;
+    c.dispatcher.poke();
+    Ok(e)
+}
+
+#[tauri::command]
+fn update_errand(state: State<'_, CoreState>, id: i64, input: ErrandInput) -> Result<Errand, String> {
+    let c = core(&state)?;
+    let e = c.store.update_errand(id, &input)?;
+    c.dispatcher.poke();
+    Ok(e)
+}
+
+#[tauri::command]
+fn delete_errand(state: State<'_, CoreState>, id: i64) -> Result<(), String> {
+    core(&state)?.store.delete_errand(id)
+}
+
+#[tauri::command]
+fn restore_errand(state: State<'_, CoreState>, id: i64) -> Result<Errand, String> {
+    let c = core(&state)?;
+    let e = c.store.restore_errand(id)?;
+    c.dispatcher.poke();
+    Ok(e)
+}
+
+/// 지금 한 번 돌린다(예약과 무관 · 다시 실행).
+#[tauri::command]
+fn run_errand_now(state: State<'_, CoreState>, id: i64) -> Result<(), String> {
+    let c = core(&state)?;
+    if c.store.is_running(id)? {
+        return Err("이미 도는 중이에요".into());
+    }
+    if c.store.errand_for_run(id)?.is_none() {
+        return Err("없는 부탁이거나 아직 승인 전이에요".into());
+    }
+    if !c.dispatcher.run_now(id) {
+        return Err("이미 줄을 서 있어요".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_run(state: State<'_, CoreState>, run_id: i64) -> Result<(), String> {
+    if core(&state)?.dispatcher.stop(run_id) {
+        Ok(())
+    } else {
+        Err("도는 중인 실행이 아니에요".into())
+    }
+}
+
+#[tauri::command]
+fn mark_run_read(state: State<'_, CoreState>, run_id: i64) -> Result<(), String> {
+    core(&state)?.store.mark_run_read(run_id)
 }
 
 /// 창 [from, to) (UTC ms) 에 걸치는 일정.
@@ -172,8 +252,8 @@ fn hide_popover(app: tauri::AppHandle) {
 pub fn run() {
     tauri::Builder::default()
         .manage(tray::PopoverState::default())
-        .manage(open_core())
         .setup(|app| {
+            app.manage(open_core(app.handle()));
             // 도크 아이콘 없이 메뉴바에만 산다(tray.rs 머리 주석). 정본은 Info.plist 의 LSUIElement 다 —
             // 🔴 이 줄만으로 하면 앱이 Regular 로 켜졌다 Accessory 로 바뀌며 **비활성화**되고, 그 순간
             // 팝오버가 blur 로 곧장 숨는다(개발 1 실측: 켜자마자 뜬 팝오버가 안 보였다). 이 줄은
@@ -200,6 +280,14 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             hide_popover,
             list_events,
+            list_errands,
+            create_errand,
+            update_errand,
+            delete_errand,
+            restore_errand,
+            run_errand_now,
+            stop_run,
+            mark_run_read,
             create_event,
             update_event,
             delete_event,

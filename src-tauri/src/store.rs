@@ -256,6 +256,15 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX proposals_pending ON proposals (created_at) WHERE status = 'pending';
     ",
+    // 4 — 개발 5: 부탁이 돌고 답이 돌아온다. 놓친 부탁을 «늦게 실행 / 건너뜀» 중 부탁마다 고르고(PLAN §9-3),
+    //     실행 기록에 상태·늦은 정도·읽음을 둔다. 건너뛴 부탁도 기록 한 줄을 남겨 다시 걸리지 않게 한다.
+    "
+    ALTER TABLE errands ADD COLUMN late TEXT NOT NULL DEFAULT 'run' CHECK (late IN ('run', 'skip'));
+    ALTER TABLE runs ADD COLUMN status TEXT NOT NULL DEFAULT 'running'
+        CHECK (status IN ('running', 'done', 'failed', 'stopped', 'skipped'));
+    ALTER TABLE runs ADD COLUMN late_ms INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE runs ADD COLUMN read_at INTEGER;
+    ",
 ];
 
 /// 한꺼번에 기다릴 수 있는 제안 수. AI 가 고리에 빠져 수백 개를 쌓아 팝오버를 덮지 않게.
@@ -333,11 +342,11 @@ pub(crate) struct Store {
     conn: Mutex<Connection>,
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     Utc::now().timestamp_millis()
 }
 
-fn local_tz() -> String {
+pub(crate) fn local_tz() -> String {
     iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into())
 }
 
@@ -407,7 +416,7 @@ impl Store {
         Ok(store)
     }
 
-    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+    pub(crate) fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         // 다른 스레드가 쥔 채 패닉해도 연결 자체는 멀쩡하다(SQLite 가 트랜잭션을 되돌린다) — 독을 무시한다.
         self.conn.lock().unwrap_or_else(|p| p.into_inner())
     }

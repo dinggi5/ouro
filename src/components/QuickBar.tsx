@@ -6,6 +6,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { canDirect, quickApi, whenLabel, type QuickDraft } from "../lib/quick";
+import { splitTarget } from "../lib/errands";
 
 export function QuickBar({
   inputRef,
@@ -23,7 +24,7 @@ export function QuickBar({
   base: string | null;
   today: Date;
   /** detail = 시트로 열기. 입력칸을 비우는 건 App 이 정한다(바로 넣었거나 시트에서 저장했을 때). */
-  onCommit: (q: QuickDraft, detail: boolean) => Promise<void>;
+  onCommit: (q: QuickDraft, detail: boolean, errand: boolean) => Promise<void>;
 }) {
   const [draft, setDraft] = useState<QuickDraft | null>(null);
   const busy = useRef(false);
@@ -35,7 +36,7 @@ export function QuickBar({
     }
     // 늦게 온 답이 새 글자의 답을 덮지 않게.
     let alive = true;
-    quickApi.parse(text, base).then(
+    quickApi.parse(splitTarget(text).text, base).then(
       (d) => alive && setDraft(d),
       () => {},
     );
@@ -48,7 +49,8 @@ export function QuickBar({
     if (busy.current || !text.trim()) return;
     busy.current = true;
     try {
-      await onCommit(await quickApi.parse(text, base), detail);
+      const sp = splitTarget(text);
+      await onCommit(await quickApi.parse(sp.text, base), detail, sp.errand);
     } catch {
       // 파싱은 실패하지 않는다(러스트가 언제나 초안을 준다). 저장 실패는 onCommit 이 토스트로 알린다.
     } finally {
@@ -57,7 +59,9 @@ export function QuickBar({
   };
 
   const when = draft ? whenLabel(draft, today) : null;
-  const direct = !!draft && canDirect(draft);
+  const errand = splitTarget(text).errand;
+  // 부탁은 늘 시트로 연다 — 바깥으로 나갈 문장을 사람이 한 번 보고 만든다(PLAN §2-④).
+  const direct = !!draft && canDirect(draft) && !errand;
 
   return (
     <div className="relative shrink-0 px-5 pt-2 pb-5">
@@ -70,8 +74,9 @@ export function QuickBar({
             onClick={() => void commit(true)}
             className="toast-in absolute inset-x-5 bottom-full flex flex-col gap-1 rounded-md bg-surface px-4 py-3 text-left shadow-[0_2px_10px_rgba(0,27,55,0.10),0_3px_20px_rgba(2,32,71,0.05)] ring-1 ring-hairline"
           >
+            {errand && <span className="text-micro font-semibold text-accent">부탁 · Claude Code</span>}
             <span className={`truncate text-body-sm font-semibold ${draft.title ? "text-ink" : "text-ink-muted"}`}>
-              {draft.title || "제목 없음"}
+              {draft.title || (errand ? "부탁할 말 없음" : "제목 없음")}
             </span>
             <span className="num text-caption text-ink-secondary">{when ?? "날짜를 못 찾았어요"}</span>
             {draft.warnings.map((w) => (
@@ -79,7 +84,7 @@ export function QuickBar({
                 {w}
               </span>
             ))}
-            <span className="mt-1 text-micro text-ink-muted">{direct ? "↩ 넣기 · ⌘↩ 고쳐서 넣기" : "↩ 확인하고 넣기"}</span>
+            <span className="mt-1 text-micro text-ink-muted">{direct ? "↩ 넣기 · ⌘↩ 고쳐서 넣기" : errand ? "↩ 확인하고 부탁하기" : "↩ 확인하고 넣기"}</span>
           </button>
         )}
       </div>
@@ -98,7 +103,7 @@ export function QuickBar({
             onText("");
           }
         }}
-        placeholder="새 일정 — 내일 3시 치과"
+        placeholder="새 일정 — 내일 3시 치과  ·  부탁 — 내일 9시 … 클로드한테"
         maxLength={200}
         aria-label="빠른 입력"
         className="h-11 w-full rounded-md bg-surface-sunken px-4 text-body-sm text-ink outline-none transition-shadow duration-100 placeholder:text-ink-muted focus:shadow-[inset_0_0_0_1.5px_var(--ink-secondary)]"

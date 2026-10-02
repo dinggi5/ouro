@@ -2187,6 +2187,7 @@ dependencies = [
  "chrono",
  "dirs",
  "iana-time-zone",
+ "libc",
  "regex",
  "rusqlite",
  "serde",

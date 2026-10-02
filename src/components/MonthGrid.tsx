@@ -4,6 +4,7 @@
 import { addDays, sameDay, startOfMonth, startOfWeek } from "../lib/time";
 import type { OuroEvent } from "../lib/events";
 import { onDay } from "../lib/events";
+import type { Errand } from "../lib/errands";
 
 const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
 
@@ -17,11 +18,13 @@ export function MonthGrid({
   cursor,
   today,
   events,
+  errands,
   onPick,
 }: {
   cursor: Date;
   today: Date;
   events: OuroEvent[];
+  errands: Errand[];
   onPick: (d: Date) => void;
 }) {
   const [first] = monthGridRange(cursor);
@@ -41,7 +44,8 @@ export function MonthGrid({
           const inMonth = d.getMonth() === cursor.getMonth();
           const selected = sameDay(d, cursor);
           const isToday = sameDay(d, today);
-          const has = events.some((e) => onDay(e, d));
+          const dayMs = d.getTime();
+          const has = events.some((e) => onDay(e, d)) || errands.some((r) => r.startAt >= dayMs && r.startAt < addDays(d, 1).getTime());
           return (
             <button
               key={d.getTime()}

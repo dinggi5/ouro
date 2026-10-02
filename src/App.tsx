@@ -13,14 +13,19 @@ import { MonthGrid, monthGridRange } from "./components/MonthGrid";
 import { blankDraft, EventSheet, fromEvent, toInput, type Draft } from "./components/EventSheet";
 import { ProposalCard } from "./components/ProposalCard";
 import { QuickBar } from "./components/QuickBar";
+import { blankErrandDraft, errandToDraft, ErrandSheet, type ErrandDraft } from "./components/ErrandSheet";
+import { errandApi, rowsOn, type Errand, type ErrandInput } from "./lib/errands";
 import { asEvent, clientLabel, proposalApi, type Proposal } from "./lib/proposals";
-import { api, errorText, eventsOn, type EventInput, type OuroEvent } from "./lib/events";
+import { api, errorText, type EventInput, type OuroEvent } from "./lib/events";
 import { canDirect, quickApi, quickToDraft, type QuickDraft } from "./lib/quick";
 import {
   addDays,
   addMonths,
+  combine,
   fmt,
   msUntilMidnight,
+  hm,
+  nextHour,
   parseYmd,
   sameDay,
   startOfDay,
@@ -93,6 +98,8 @@ type Sheet = {
   notice?: string[];
   proposalId?: number;
 };
+/** 부탁 시트. id = 이미 있는 부탁(목록에서 늘 최신으로 찾는다), null = 새 부탁. */
+type ErrandSheetState = { id: number | null; draft: ErrandDraft; key: number; fromQuick?: boolean; notice?: string[] };
 type Toast = { text: string; undo?: () => void; key: number };
 
 function App() {
@@ -104,6 +111,8 @@ function App() {
   const [fatal, setFatal] = useState<string | null>(null);
   const [backupError, setBackupError] = useState<string | null>(null);
   const [sheet, setSheet] = useState<Sheet | null>(null);
+  const [errands, setErrands] = useState<Errand[]>([]);
+  const [errandSheet, setErrandSheet] = useState<ErrandSheetState | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
   const sheetKey = useRef(0);
   const [quickText, setQuickText] = useState("");
@@ -155,9 +164,10 @@ function App() {
   const reload = useCallback(async () => {
     const seq = ++eventsSeq.current;
     try {
-      const list = await api.list(from, to);
+      const [list, errs] = await Promise.all([api.list(from, to), errandApi.list(from, to)]);
       if (seq !== eventsSeq.current) return;
       setEvents(list);
+      setErrands(errs);
       setFatal(null);
     } catch (e) {
       if (seq === eventsSeq.current) setFatal(errorText(e));
@@ -170,6 +180,20 @@ function App() {
     const onFocus = () => void reload();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
+  }, [reload]);
+
+  // 부탁이 시작하거나 끝나면 러스트가 «errands-changed» 를 보낸다 — 점(◯ ◔ ●)이 스스로 바뀐다.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let alive = true;
+    listen("errands-changed", () => void reload()).then(
+      (u) => (alive ? (unlisten = u) : u()),
+      () => {},
+    );
+    return () => {
+      alive = false;
+      unlisten?.();
+    };
   }, [reload]);
 
   // AI 제안. 새 제안이 오면 러스트가 팝오버를 띄우고 «proposals-changed» 를 보낸다 — 이미 떠 있던 팝오버엔 focus 가 안 오니 이벤트로 듣는다.
@@ -205,6 +229,14 @@ function App() {
     return () => window.clearTimeout(t);
   }, [toast]);
 
+  const openErrand = (e: Errand) => {
+    setErrandSheet({ id: e.id, draft: errandToDraft(e), key: ++sheetKey.current });
+    // 열어 본 답은 «읽음» — 점이 액센트에서 회색으로.
+    if (e.run?.status === "done" && !e.run.read) {
+      errandApi.markRead(e.run.id).then(() => void reload(), () => {});
+    }
+  };
+
   const openEdit = (e: OuroEvent) => setSheet({ draft: fromEvent(e), editing: e, key: ++sheetKey.current });
 
   /** 만든 날로 커서를 옮긴다 — 다른 날에 만들었는데 목록에 안 보이면 «저장이 안 됐나» 한다. */
@@ -232,8 +264,74 @@ function App() {
     }
   };
 
+  const openSheetErrand = errandSheet?.id != null ? (errands.find((x) => x.id === errandSheet.id) ?? null) : null;
+  // 열어 둔 부탁이 지워졌거나 창 밖으로 나갔으면 시트를 닫는다.
+  useEffect(() => {
+    if (errandSheet?.id != null && !openSheetErrand) setErrandSheet(null);
+  }, [errandSheet, openSheetErrand]);
+
+  const saveErrand = async (input: ErrandInput): Promise<string | null> => {
+    try {
+      const saved = errandSheet?.id != null ? await errandApi.update(errandSheet.id, input) : await errandApi.create(input);
+      if (errandSheet?.fromQuick) setQuickText("");
+      setErrandSheet(null);
+      const day = new Date(saved.startAt);
+      if (!sameDay(day, cursor)) setCursor(startOfDay(day));
+      await reload();
+      return null;
+    } catch (e) {
+      return errorText(e);
+    }
+  };
+
+  const removeErrand = async () => {
+    const id = errandSheet?.id;
+    if (id == null) return;
+    try {
+      await errandApi.remove(id);
+      setErrandSheet(null);
+      await reload();
+      showToast("삭제했어요", async () => {
+        setToast(null);
+        try {
+          await errandApi.restore(id);
+          await reload();
+        } catch (err) {
+          showToast(errorText(err));
+        }
+      });
+    } catch (err) {
+      showToast(errorText(err));
+    }
+  };
+
+  /** 시트의 «지금 실행»·«다시 실행»·«중단». 실패는 문장으로 시트 안에 보인다. */
+  const errandAction = (fn: () => Promise<void>) => async (): Promise<string | null> => {
+    try {
+      await fn();
+      await reload();
+      return null;
+    } catch (e) {
+      return errorText(e);
+    }
+  };
+
   /** 빠른 입력 확정. 날짜를 알아들었고 모양이 맞으면 바로 넣고, 아니면(또는 ⌘↩) 그 초안으로 시트를 연다. */
-  const quickCommit = async (q: QuickDraft, detail: boolean) => {
+  const quickCommit = async (q: QuickDraft, detail: boolean, errand: boolean) => {
+    if (errand) {
+      // «클로드한테» — 부탁. 문장은 날짜 말을 걷어 낸 제목이고, 날짜·시각은 파서가 읽은 대로(없으면 다음 정각)다. 늘 시트로.
+      const blank = blankErrandDraft(sameDay(cursor, new Date()) ? nextHour(new Date()) : new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate(), 9));
+      const at = q.startDate && !q.allDay ? combine(q.startDate, q.startTime ?? "09:00") : null;
+      const draft: ErrandDraft = at
+        ? { ...blank, prompt: q.title, date: ymd(at), time: hm(at) }
+        : { ...blank, prompt: q.title, ...(q.startDate ? { date: q.startDate } : {}) };
+      const notice = [
+        ...q.warnings,
+        ...(q.startDate ? [] : ["날짜를 못 찾아서 다음 정각으로 잡았어요"]),
+      ];
+      setErrandSheet({ id: null, draft, key: ++sheetKey.current, fromQuick: true, notice });
+      return;
+    }
     if (q.miss) quickApi.recordMiss(q.miss).catch(() => {});
     const draft = quickToDraft(q, blankDraft(cursor, new Date()));
     // 바로 넣지 않는 때: 날짜를 못 찾았다(fallback 은 추측이다), 파서가 경고했다(없는 날짜를 빼고 남은 시각·반복의 첫 번 등,
@@ -338,25 +436,26 @@ function App() {
         if (k === "w") {
           e.preventDefault();
           void invoke("hide_popover");
-        } else if (k === "n" && !sheet) {
+        } else if (k === "n" && !sheet && !errandSheet) {
           e.preventDefault();
           quickRef.current?.focus();
         }
         return;
       }
-      if (e.key === "Escape" && sheet) {
+      if (e.key === "Escape" && (sheet || errandSheet)) {
         e.preventDefault();
-        setSheet(null);
+        if (sheet) setSheet(null);
+        else setErrandSheet(null);
         return;
       }
-      if (sheet || typing || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (sheet || errandSheet || typing || e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === "ArrowLeft") step(-1);
       else if (e.key === "ArrowRight") step(1);
       else if (e.key === "t" || e.key === "T") setCursor(today);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [sheet, step, today]);
+  }, [sheet, errandSheet, step, today]);
 
   const t = title(view, cursor);
   const atToday = sameDay(cursor, today);
@@ -424,14 +523,16 @@ function App() {
         {fatal ? (
           <Empty text={fatal} />
         ) : view === "day" ? (
-          <DayBody day={cursor} events={events} now={nowMs} onOpen={openEdit} />
+          <DayBody day={cursor} events={events} errands={errands} now={nowMs} onOpen={openEdit} onOpenErrand={openErrand} />
         ) : view === "week" ? (
           <WeekBody
             cursor={cursor}
             today={today}
             events={events}
+            errands={errands}
             now={nowMs}
             onOpen={openEdit}
+            onOpenErrand={openErrand}
             onPickDay={(d) => {
               setCursor(d);
               setView("day");
@@ -439,9 +540,9 @@ function App() {
           />
         ) : (
           <>
-            <MonthGrid cursor={cursor} today={today} events={events} onPick={setCursor} />
+            <MonthGrid cursor={cursor} today={today} events={events} errands={errands} onPick={setCursor} />
             <div className="mt-4">
-              <DayBody day={cursor} events={events} now={nowMs} onOpen={openEdit} />
+              <DayBody day={cursor} events={events} errands={errands} now={nowMs} onOpen={openEdit} onOpenErrand={openErrand} />
             </div>
           </>
         )}
@@ -492,6 +593,23 @@ function App() {
         </>
       )}
 
+      {errandSheet && (
+        <>
+          <div className="scrim-in absolute inset-0 bg-black/30" onClick={() => setErrandSheet(null)} />
+          <ErrandSheet
+            key={errandSheet.key}
+            errand={openSheetErrand}
+            initial={errandSheet.draft}
+            notice={errandSheet.notice}
+            onSave={saveErrand}
+            onDelete={() => void removeErrand()}
+            onRunNow={errandAction(() => errandApi.runNow(errandSheet.id as number))}
+            onStop={errandAction(() => errandApi.stop(openSheetErrand?.run?.id ?? 0))}
+            onClose={() => setErrandSheet(null)}
+          />
+        </>
+      )}
+
       {toast && (
         <div
           key={toast.key}
@@ -530,18 +648,27 @@ function Empty({ text }: { text: string }) {
   return <p className="py-12 text-center text-body-sm text-ink-muted">{text}</p>;
 }
 
-function DayBody(props: { day: Date; events: OuroEvent[]; now: number; onOpen: (e: OuroEvent) => void }) {
-  const list = eventsOn(props.events, props.day);
-  if (list.length === 0) return <Empty text="비어 있어요" />;
-  return <DayList day={props.day} events={list} now={props.now} onOpen={props.onOpen} />;
+function DayBody(props: {
+  day: Date;
+  events: OuroEvent[];
+  errands: Errand[];
+  now: number;
+  onOpen: (e: OuroEvent) => void;
+  onOpenErrand: (e: Errand) => void;
+}) {
+  const rows = rowsOn(props.events, props.errands, props.day);
+  if (rows.length === 0) return <Empty text="비어 있어요" />;
+  return <DayList day={props.day} rows={rows} now={props.now} onOpen={props.onOpen} onOpenErrand={props.onOpenErrand} />;
 }
 
 function WeekBody(props: {
   cursor: Date;
   today: Date;
   events: OuroEvent[];
+  errands: Errand[];
   now: number;
   onOpen: (e: OuroEvent) => void;
+  onOpenErrand: (e: Errand) => void;
   onPickDay: (d: Date) => void;
 }) {
   const start = startOfWeek(props.cursor);
@@ -549,7 +676,7 @@ function WeekBody(props: {
   return (
     <div className="flex flex-col gap-4">
       {days.map((d) => {
-        const list = eventsOn(props.events, d);
+        const list = rowsOn(props.events, props.errands, d);
         const isToday = sameDay(d, props.today);
         return (
           <div key={d.getTime()}>
@@ -564,7 +691,7 @@ function WeekBody(props: {
               <span>{fmt.weekdayShort.format(d)}</span>
               {isToday && <span>· 오늘</span>}
             </button>
-            {list.length > 0 && <DayList day={d} events={list} now={props.now} onOpen={props.onOpen} />}
+            {list.length > 0 && <DayList day={d} rows={list} now={props.now} onOpen={props.onOpen} onOpenErrand={props.onOpenErrand} />}
           </div>
         );
       })}
