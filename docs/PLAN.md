@@ -147,7 +147,8 @@ MCP 명세 <https://modelcontextprotocol.io/specification>, iCalendar RRULE RFC 
 | `get_proposal(id)` | 제안 상태 — **개발 4** | 없음 |
 | `list_errands` / `get_run(id)` | 부탁·답 읽기 | 없음 |
 | `propose_event(...)` | 일정 제안 → 팝오버에 카드. **개발 4 로 앞당김**(개발 3, 사장 — 복잡한 자연어는 규칙 파서 대신 AI 가 맡는다) | **사람 한 번 클릭** |
-| `propose_errand(...)` | 부탁 제안 | **사람 승인 + 보낼 원문 표시** |
+| `propose_errand(...)` | 부탁 제안 — **개발 6** | **사람 승인 + 보낼 원문 표시** |
+| `get_errand_proposal(id)` | 부탁 제안 상태(받은 뒤엔 상태·`run_id` 만, 글·답 없음) — **개발 6** | 없음 |
 | `update/delete_event` | v0.2 이후. 삭제는 항상 승인 | 승인 |
 
 - **「비공개」 표시**: 일정마다 «AI 에게 숨기기» 로 두면 MCP 로 아예 안 나간다(예: 병원·가족). 개발 4 에서 일정 단위로 넣음.
@@ -191,7 +192,7 @@ MCP 명세 <https://modelcontextprotocol.io/specification>, iCalendar RRULE RFC 
 | 3 | 규칙 날짜 파서 + 빠른 입력 → 일정 쓰기 | 한국어 상대날짜 테스트 50개 통과 |
 | 4 | `ouro-mcp` 읽기 도구 + **일정 제안(`propose_event`) + 승인 카드** + 소켓 + 하트비트 | Claude Code 에서 「내일 일정」, 「금요일 3시 치과 넣어 줘」 → 팝오버 카드 → 한 번 클릭 |
 | 5 | 부탁 모델 + 디스패처(Claude) + 답 표시 — **완료** | 예약 부탁이 돌고 답이 캘린더에 |
-| 6 | MCP 제안 도구 + 승인 카드 + 순환 제한 | Claude 가 제안 → 내가 승인 → 실행 |
+| 6 | MCP 제안 도구 + 승인 카드 + 순환 제한 — **완료** | Claude 가 제안 → 내가 승인 → 실행 |
 | 7 | Codex·반복·이어서 부탁·브리핑 | |
 | 8 | 서명·업데이트·배포·.mcpb | brew 설치 |
 | 나중 | 로컬 엔진 — **사장이 정할 때만** | §7 «못 알아들은 입력» 숫자를 보고 판단 |
