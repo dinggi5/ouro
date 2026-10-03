@@ -289,7 +289,9 @@ function App() {
             : await api.create(input);
       if (sheet?.proposalId !== undefined) loadProposals();
       if (sheet?.fromQuick) setQuickText("");
-      setSheet(null);
+      // 저장한 그 시트만 닫는다 — 응답이 늦는 사이 닫고 새 시트를 열었으면 그건 두고(코덱스 개발 8).
+      const savedKey = sheet?.key;
+      setSheet((cur) => (cur?.key === savedKey ? null : cur));
       if (!sheet?.editing) reveal(saved);
       await reload();
       return null;
@@ -314,7 +316,8 @@ function App() {
             : await errandApi.create(input);
       if (errandSheet?.proposalId !== undefined) loadProposals();
       if (errandSheet?.fromQuick) setQuickText("");
-      setErrandSheet(null);
+      const savedKey = errandSheet?.key;
+      setErrandSheet((cur) => (cur?.key === savedKey ? null : cur));
       const day = new Date(saved.startAt);
       if (!sameDay(day, cursor)) setCursor(startOfDay(day));
       await reload();
@@ -360,17 +363,30 @@ function App() {
    *  보고 있는 날이 기준이다(오늘이면 다음 정각, 다른 날이면 9시) — 빠른 입력의 «날짜 없는 입력» 과 같은 규칙. */
   const addNew = (kind: "event" | "errand") => {
     setAddMenu(false);
+    // 시트가 이미 열려 있으면 겹쳐 열지 않는다(시트 뒤 + 로 탭 이동해 올 수 있다 — 코덱스 개발 8).
+    if (sheet || errandSheet) return;
+    // 업데이트를 받는 중이면 곧 다시 켜진다 — 쓰던 초안이 사라지니 새로 쓰기 시작하지 않게(코덱스 개발 8 P1).
+    if (update.installing) {
+      showToast("업데이트를 설치하는 중이에요");
+      return;
+    }
     const now = new Date();
     if (kind === "event") {
       setSheet({ draft: blankDraft(cursor, now), editing: null, key: ++sheetKey.current });
     } else {
-      const at = sameDay(cursor, now) ? nextHour(now) : new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate(), 9);
+      // 부탁은 지난 때로 잡으면 만들자마자 돈다(놓치면 «늦게라도 실행»). 지난 날을 보고 있어도 기본은 다음 정각 — 일정과 다른 점.
+      const day9 = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate(), 9);
+      const at = day9.getTime() > now.getTime() && !sameDay(cursor, now) ? day9 : nextHour(now);
       setErrandSheet({ id: null, draft: blankErrandDraft(at), key: ++sheetKey.current });
     }
   };
 
   /** 빠른 입력 확정. 날짜를 알아들었고 모양이 맞으면 바로 넣고, 아니면(또는 ⌘↩) 그 초안으로 시트를 연다. */
   const quickCommit = async (q: QuickDraft, detail: boolean, errand: QuickErrand | null) => {
+    if (update.installing) {
+      showToast("업데이트를 설치하는 중이에요");
+      return;
+    }
     if (errand) {
       // «클로드한테»·«코덱스한테» — 부탁. 문장은 날짜 말을 걷어 낸 제목이고, 날짜·시각은 파서가 읽은 대로(없으면 다음 정각)다. 늘 시트로.
       // «매일·평일·매주» 는 반복으로 — 첫 회차 날짜는 파서가 정한다.
@@ -554,6 +570,16 @@ function App() {
   // 키보드: ⌘W 닫기(창이 무테라 AppKit 이 안 준다, Kura 개발 58), ⌘N 빠른 입력으로, Esc 시트 닫기, ←/→ 넘기기, T 오늘.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // + 메뉴가 열려 있으면 메뉴만 — Esc 로 닫고, ←/→·T 가 뒤의 날짜를 넘기지 않게(코덱스 개발 8).
+      if (addMenu) {
+        if (e.key === "Escape" || e.metaKey) {
+          e.preventDefault();
+          setAddMenu(false);
+        } else if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "t" || e.key === "T") {
+          e.preventDefault();
+        }
+        return;
+      }
       const typing = e.target instanceof HTMLElement && e.target.closest("input, textarea, select");
       if (e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
         const k = e.key.toLowerCase();
@@ -579,7 +605,7 @@ function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [sheet, errandSheet, step, today]);
+  }, [sheet, errandSheet, step, today, addMenu]);
 
   const t = title(view, cursor);
   const atToday = sameDay(cursor, today);
@@ -780,7 +806,6 @@ function App() {
           <div className="absolute inset-0" onClick={() => setAddMenu(false)} />
           <div
             role="menu"
-            onKeyDown={(e) => e.key === "Escape" && setAddMenu(false)}
             className="toast-in absolute top-16 right-5 flex w-36 flex-col rounded-md bg-surface p-1 shadow-[0_2px_10px_rgba(0,27,55,0.10),0_3px_20px_rgba(2,32,71,0.05)] ring-1 ring-hairline"
           >
             <button type="button" role="menuitem" autoFocus onClick={() => addNew("event")} className="h-10 rounded-sm px-3 text-left text-body-sm text-ink hover:bg-surface-sunken">

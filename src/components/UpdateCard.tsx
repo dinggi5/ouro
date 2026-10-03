@@ -71,6 +71,15 @@ export function UpdateLine({ u, cardHidden }: { u: UpdateState; cardHidden: bool
       </button>
     );
   }
+  if (cardHidden && u.info && (u.installing || u.message)) {
+    // 설치 중·설치 실패를 제안 카드에 가려 놓치지 않게 — 진행률이나 이유를 이 줄로(코덱스 개발 8).
+    const pct = u.progress === null ? null : Math.round(u.progress * 100);
+    return (
+      <p role="status" className="num flex shrink-0 items-center px-5 pt-2 text-micro text-ink-secondary">
+        {u.installing ? (pct === null ? "업데이트 내려받는 중…" : `업데이트 내려받는 중 ${pct}%`) : u.message}
+      </p>
+    );
+  }
   if (!u.info || (u.open && !cardHidden)) return null;
   return (
     <button
