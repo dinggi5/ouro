@@ -69,7 +69,8 @@ const CLIENTS: Record<string, string> = {
 
 /** «Claude Code» 처럼 사람이 아는 이름. 모르면 받은 글 그대로(러스트가 길이·제어 문자를 이미 걸렀다). */
 export function clientLabel(c: string): string {
-  return CLIENTS[c] ?? c;
+  // 자기 속성만 — `__proto__` 같은 이름이 Object.prototype 을 돌려줘 렌더를 터뜨리지 않게(코덱스 개발 6).
+  return Object.prototype.hasOwnProperty.call(CLIENTS, c) ? CLIENTS[c] : c;
 }
 
 /** 부탁 제안 시트용 입력 모양. */
