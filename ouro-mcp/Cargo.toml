@@ -1,6 +1,6 @@
 [package]
 name = "ouro-mcp"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 description = "Ouro MCP 사이드카 — AI 가 캘린더를 읽고 일정을 «제안» 한다(승인은 사람이 팝오버에서)"

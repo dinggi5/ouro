@@ -1,6 +1,6 @@
 [package]
 name = "ouro"
-version = "0.1.0"
+version = "0.1.1"
 description = "선순환 캘린더 — 맥 메뉴바 캘린더 + AI 디스패처 + MCP"
 authors = ["dinggi5"]
 license = "MIT"

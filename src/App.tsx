@@ -143,6 +143,7 @@ function App() {
   const [brief, setBrief] = useState<Briefing | null>(null);
   const quickRef = useRef<HTMLInputElement>(null);
   const update = useUpdate();
+  const [addMenu, setAddMenu] = useState(false);
 
   // 자정이 지나면 «오늘» 에 머물던 커서도 따라 넘어간다. 다른 날을 보고 있었다면 그대로 둔다.
   const lastToday = useRef(today);
@@ -352,6 +353,19 @@ function App() {
       return null;
     } catch (e) {
       return errorText(e);
+    }
+  };
+
+  /** + 버튼 — 문장 없이 빈 시트로 바로 넣는다(개발 8 뒤 사장 피드백: 빠른 입력만 있으니 «AI 채팅만 되는 앱» 처럼 보였다).
+   *  보고 있는 날이 기준이다(오늘이면 다음 정각, 다른 날이면 9시) — 빠른 입력의 «날짜 없는 입력» 과 같은 규칙. */
+  const addNew = (kind: "event" | "errand") => {
+    setAddMenu(false);
+    const now = new Date();
+    if (kind === "event") {
+      setSheet({ draft: blankDraft(cursor, now), editing: null, key: ++sheetKey.current });
+    } else {
+      const at = sameDay(cursor, now) ? nextHour(now) : new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate(), 9);
+      setErrandSheet({ id: null, draft: blankErrandDraft(at), key: ++sheetKey.current });
     }
   };
 
@@ -592,6 +606,9 @@ function App() {
                 오늘
               </button>
             )}
+            <IconButton label="새로 만들기" onClick={() => setAddMenu((o) => !o)}>
+              <path d="M8 3.5v9M3.5 8h9" />
+            </IconButton>
             <IconButton label="이전" onClick={() => step(-1)}>
               <path d="M10 3.5 5.5 8l4.5 4.5" />
             </IconButton>
@@ -754,6 +771,26 @@ function App() {
             onFollowUp={() => openSheetErrand && followUp(openSheetErrand)}
             onClose={() => setErrandSheet(null)}
           />
+        </>
+      )}
+
+      {addMenu && (
+        <>
+          {/* 바깥을 누르면 닫힌다. 투명 — 메뉴 하나에 화면을 어둡게 하지 않는다. */}
+          <div className="absolute inset-0" onClick={() => setAddMenu(false)} />
+          <div
+            role="menu"
+            onKeyDown={(e) => e.key === "Escape" && setAddMenu(false)}
+            className="toast-in absolute top-16 right-5 flex w-36 flex-col rounded-md bg-surface p-1 shadow-[0_2px_10px_rgba(0,27,55,0.10),0_3px_20px_rgba(2,32,71,0.05)] ring-1 ring-hairline"
+          >
+            <button type="button" role="menuitem" autoFocus onClick={() => addNew("event")} className="h-10 rounded-sm px-3 text-left text-body-sm text-ink hover:bg-surface-sunken">
+              일정
+            </button>
+            <button type="button" role="menuitem" onClick={() => addNew("errand")} className="flex h-10 items-center gap-2 rounded-sm px-3 text-left text-body-sm text-ink hover:bg-surface-sunken">
+              <span>부탁</span>
+              <span className="text-caption text-ink-muted">AI 에게</span>
+            </button>
+          </div>
         </>
       )}
 
