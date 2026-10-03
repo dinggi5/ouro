@@ -11,6 +11,7 @@ import "./App.css";
 import { DayList } from "./components/DayList";
 import { MonthGrid, monthGridRange } from "./components/MonthGrid";
 import { blankDraft, EventSheet, fromEvent, toInput, type Draft } from "./components/EventSheet";
+import { UpdateCard, UpdateLine } from "./components/UpdateCard";
 import { ErrandProposalCard } from "./components/ErrandProposalCard";
 import { ProposalCard } from "./components/ProposalCard";
 import { QuickBar } from "./components/QuickBar";
@@ -28,6 +29,7 @@ import {
 } from "./lib/proposals";
 import { api, errorText, type EventInput, type OuroEvent } from "./lib/events";
 import { canDirect, quickApi, quickToDraft, type QuickDraft } from "./lib/quick";
+import { useUpdate } from "./lib/update";
 import {
   addDays,
   addMonths,
@@ -140,6 +142,7 @@ function App() {
   const [aiClients, setAiClients] = useState<string[]>([]);
   const [brief, setBrief] = useState<Briefing | null>(null);
   const quickRef = useRef<HTMLInputElement>(null);
+  const update = useUpdate();
 
   // 자정이 지나면 «오늘» 에 머물던 커서도 따라 넘어간다. 다른 날을 보고 있었다면 그대로 둔다.
   const lastToday = useRef(today);
@@ -642,6 +645,8 @@ function App() {
         />
       )}
 
+      <UpdateCard u={update} />
+
       <section className="min-h-0 flex-1 overflow-y-auto px-5 pt-4 pb-5">
         {fatal ? (
           <Empty text={fatal} />
@@ -694,6 +699,8 @@ function App() {
           <span className="truncate">{aiClients.map(clientLabel).join(" · ")} 연결됨</span>
         </p>
       )}
+
+      <UpdateLine u={update} />
 
       {backupError && (
         <p role="alert" className="shrink-0 truncate px-5 pt-2 text-micro text-danger" title={backupError}>

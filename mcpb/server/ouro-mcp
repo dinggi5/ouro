@@ -1,0 +1,69 @@
+#!/bin/sh
+# Ouro MCP 런처 (개발 8, Kura `mcpb/server/kura-mcp` 에서 가져옴) — 설치된 Ouro.app 안의 서명된 ouro-mcp 를 그대로 exec 한다.
+#
+# 왜 바이너리를 확장에 안 넣나:
+#   1) 남에게 주는 실행 파일은 서명·공증이 필요한데, 맨 Mach-O 에는 공증 티켓을 스테이플할 수 없다(.app/.dmg/.pkg 만).
+#      앱 안에 있으면 앱과 함께 스테이플돼 인터넷 없이도 통과한다.
+#   2) 앱과 MCP 바이너리 버전이 갈리면 소켓(~/.ouro/ouro.sock) 대화가 조용히 어긋난다. 한 벌만 둔다.
+#   3) 어차피 사이드카는 앱에 묻기만 한다(DB 를 직접 안 연다) — 앱 없는 MCP 는 아무것도 못 하니 «앱 필수» 가 정직하다.
+#
+# 🔴 찾은 앱의 서명을 확인하기 전에는 실행하지 않는다. 경로로 앱을 찾는데 경로는 누구나 만들 수 있다.
+set -eu
+
+BUNDLE_ID="com.dinggi5.ouro"
+TEAM_ID="74ZAMXKVXN"
+# anchor apple generic = 애플이 발급한 인증서 사슬, identifier = 이 번들, leaf OU = 우리 팀. 셋 다 맞아야 우리가 서명한 Ouro 다.
+REQUIREMENT="anchor apple generic and identifier \"$BUNDLE_ID\" and certificate leaf[subject.OU] = \"$TEAM_ID\""
+# exec 할 바이너리 자체의 requirement. 사이드카의 identifier 는 번들 id 가 아니라 바이너리 이름이다(Kura 실측).
+BIN_REQUIREMENT="anchor apple generic and identifier \"ouro-mcp\" and certificate leaf[subject.OU] = \"$TEAM_ID\""
+# 🔴 도구는 절대경로로만. PATH 에서 찾으면 PATH 앞에 둔 가짜 codesign 이 검증을 통째로 우회한다(Kura 1차 리뷰 재현). /usr/bin 은 SIP 가 지킨다.
+CODESIGN=/usr/bin/codesign
+MDFIND=/usr/bin/mdfind
+[ -x "$CODESIGN" ] || { printf 'Ouro MCP: %s 이 없습니다\n' "$CODESIGN" >&2; exit 1; }
+
+die() {
+  printf 'Ouro MCP: %s\n' "$1" >&2
+  shift
+  for line in "$@"; do printf '  %s\n' "$line" >&2; done
+  exit 1
+}
+
+# 앱 후보. OURO_APP 을 주면 그것만 본다(서명 검사는 똑같이 한다).
+if [ -n "${OURO_APP:-}" ]; then
+  CANDIDATES="$OURO_APP"
+else
+  CANDIDATES="/Applications/Ouro.app
+$HOME/Applications/Ouro.app"
+  # 둘 다 없을 때만 Spotlight 로 찾는다. 찾아도 서명을 통과해야 쓴다.
+  if [ ! -d "/Applications/Ouro.app" ] && [ ! -d "$HOME/Applications/Ouro.app" ]; then
+    FOUND="$("$MDFIND" "kMDItemCFBundleIdentifier == '$BUNDLE_ID'" 2>/dev/null || true)"
+    [ -n "$FOUND" ] && CANDIDATES="$CANDIDATES
+$FOUND"
+  fi
+fi
+
+APP=""
+IFS='
+'
+for c in $CANDIDATES; do
+  [ -n "$c" ] || continue
+  if [ -x "$c/Contents/MacOS/ouro-mcp" ]; then APP="$c"; break; fi
+done
+unset IFS
+
+[ -n "$APP" ] || die "Ouro 앱을 찾지 못했습니다." \
+  "Ouro 를 설치한 뒤 다시 시도하세요:  https://github.com/dinggi5/ouro" \
+  "앱을 /Applications 밖에 두었다면 OURO_APP 환경변수로 경로를 알려 주세요."
+
+# 🔴 fail-closed. --deep: 앱 안에 든 코드(사이드카 포함)의 변조까지(TN2206). --strict: 리소스 봉인 위반도 실패.
+"$CODESIGN" --verify --deep --strict -R "=$REQUIREMENT" "$APP" >/dev/null 2>&1 || die \
+  "서명 확인에 실패했습니다: $APP" \
+  "우리가 서명한 Ouro 가 아니거나 앱이 손상됐습니다. 실행하지 않았습니다." \
+  "공식 배포본을 다시 받으세요: https://github.com/dinggi5/ouro/releases"
+
+# exec 하는 파일 그 자체도 검증한다 — 앱 검증과 exec 사이의 창(TOCTOU)을 좁힌다.
+"$CODESIGN" --verify --strict -R "=$BIN_REQUIREMENT" "$APP/Contents/MacOS/ouro-mcp" >/dev/null 2>&1 || die \
+  "MCP 바이너리 서명 확인에 실패했습니다: $APP/Contents/MacOS/ouro-mcp" \
+  "실행하지 않았습니다. 공식 배포본을 다시 받으세요: https://github.com/dinggi5/ouro/releases"
+
+exec "$APP/Contents/MacOS/ouro-mcp" "$@"

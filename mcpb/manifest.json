@@ -1,0 +1,42 @@
+{
+  "manifest_version": "0.3",
+  "name": "ouro",
+  "display_name": "Ouro",
+  "version": "0.1.0",
+  "description": "A local menu bar calendar for macOS — read your schedule, find free time, and propose events and errands that you approve in the app.",
+  "long_description": "Connects to the installed Ouro app (a calendar that lives only on this Mac). Claude can read events and free time, and **propose** events or errands — a message your Claude Code or Codex runs at a set time. Nothing is added or run until you approve the card in the Ouro popover; private events are never shared.\n\nThis extension contains no executable. It verifies and runs the signed, notarized binary inside the installed Ouro.app. Install Ouro first: https://github.com/dinggi5/ouro",
+  "author": {
+    "name": "dinggi5",
+    "url": "https://github.com/dinggi5"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dinggi5/ouro"
+  },
+  "homepage": "https://github.com/dinggi5/ouro",
+  "documentation": "https://github.com/dinggi5/ouro#readme",
+  "support": "https://github.com/dinggi5/ouro/issues",
+  "icon": "icon.png",
+  "server": {
+    "type": "binary",
+    "entry_point": "server/ouro-mcp",
+    "mcp_config": {
+      "command": "${__dirname}/server/ouro-mcp",
+      "args": [],
+      "env": {}
+    }
+  },
+  "tools": [
+    { "name": "get_agenda", "description": "Events between two local dates (read only; private events are hidden)" },
+    { "name": "find_free_time", "description": "Free gaps of a given length inside working hours (read only)" },
+    { "name": "propose_event", "description": "Propose an event — it is added only when you approve the card in Ouro" },
+    { "name": "get_proposal", "description": "Status of an event proposal (read only)" },
+    { "name": "propose_errand", "description": "Propose an errand (a message Claude Code or Codex runs later) — runs only after you approve it in Ouro" },
+    { "name": "get_errand_proposal", "description": "Status of an errand proposal (read only)" }
+  ],
+  "keywords": ["calendar", "schedule", "macos", "menu-bar", "local-first", "claude-code", "codex", "mcp"],
+  "license": "MIT",
+  "compatibility": {
+    "platforms": ["darwin"]
+  }
+}

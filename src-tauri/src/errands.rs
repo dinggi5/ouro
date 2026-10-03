@@ -757,6 +757,13 @@ impl Store {
             .map_err(|e| e.to_string())
     }
 
+    /// 지금 도는 부탁이 하나라도 있나 — 업데이트 설치(앱 재시작) 전에 본다(update.rs).
+    pub(crate) fn any_running(&self) -> Result<bool, String> {
+        self.conn()
+            .query_row("SELECT EXISTS (SELECT 1 FROM runs WHERE status = 'running')", [], |r| r.get(0))
+            .map_err(|e| e.to_string())
+    }
+
     /// 이 부탁이 지금 도는 중인가.
     pub(crate) fn is_running(&self, item_id: i64) -> Result<bool, String> {
         self.conn()

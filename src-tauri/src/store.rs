@@ -306,7 +306,46 @@ pub(crate) const MIGRATIONS: &[&str] = &[
         value TEXT NOT NULL
     );
     ",
+    // 7 — 개발 8: 기기와 무관한 고유 id(`uid`, UUID v4 소문자). 정수 id 는 기기마다 1,2,3… 이라 동기화(개발 9)에서 겹친다 —
+    //     정수 id 는 로컬 키로 남기고 기기 사이는 `uid` 로만 맞춘다. 부탁은 `items` 한 줄이라 `items.uid` 가 함께 덮는다.
+    //     SQLite 는 비결정적 기본값(`DEFAULT (randomblob…)`)을 ALTER 로 못 붙이므로: 칸 → 기존 줄 채우기 → 유일 색인 →
+    //     INSERT 뒤 비었으면 채우는 트리거(INSERT 하는 곳마다 고치지 않는다; 동기화로 들어온 줄은 제 uid 를 들고 온다) →
+    //     한 번 붙은 uid 는 못 바꾸는 트리거(바뀌면 다른 기기에서 다른 물건이 된다). NOT NULL 은 이 둘이 대신 지킨다.
+    UID_MIGRATION,
 ];
+
+/// SQL 로 만드는 UUID v4: 8-4-4-4-12, 세 번째 묶음 첫 글자 `4`, 네 번째 묶음 첫 글자 8·9·a·b.
+/// `random() & 3` — `abs(random())` 은 i64 최솟값에서 넘침 오류가 난다.
+macro_rules! uuid_sql {
+    () => {
+        "lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))"
+    };
+}
+macro_rules! uid_for {
+    ($t:literal) => {
+        concat!(
+            "ALTER TABLE ", $t, " ADD COLUMN uid TEXT;\n",
+            "UPDATE ", $t, " SET uid = ", uuid_sql!(), " WHERE uid IS NULL;\n",
+            "CREATE UNIQUE INDEX ", $t, "_uid ON ", $t, " (uid);\n",
+            "CREATE TRIGGER ", $t, "_uid_fill AFTER INSERT ON ", $t, " WHEN NEW.uid IS NULL BEGIN\n",
+            "  UPDATE ", $t, " SET uid = ", uuid_sql!(), " WHERE rowid = NEW.rowid;\n",
+            "END;\n",
+            "CREATE TRIGGER ", $t, "_uid_keep BEFORE UPDATE OF uid ON ", $t, " WHEN OLD.uid IS NOT NULL AND NEW.uid IS NOT OLD.uid BEGIN\n",
+            "  SELECT RAISE(ABORT, 'uid 는 바꿀 수 없어요');\n",
+            "END;\n",
+        )
+    };
+}
+/// 7번 마이그레이션 SQL. 표 넷에 같은 모양을 매크로로 붙인다(손으로 네 번 베끼면 어긋날 수 있어서).
+const UID_MIGRATION: &str = concat!(
+    uid_for!("items"),
+    uid_for!("runs"),
+    uid_for!("proposals"),
+    uid_for!("errand_proposals"),
+);
+/// uid 를 단 표들 — 테스트가 하나씩 확인한다.
+#[cfg(test)]
+const UID_TABLES: &[&str] = &["items", "runs", "proposals", "errand_proposals"];
 
 /// 한꺼번에 기다릴 수 있는 제안 수. AI 가 고리에 빠져 수백 개를 쌓아 팝오버를 덮지 않게.
 const PENDING_MAX: i64 = 20;
@@ -998,6 +1037,97 @@ mod tests {
         assert_eq!(v, MIGRATIONS.len() as i64);
         assert_eq!(s.list_events(0, 10).unwrap()[0].title, "옛 일정");
         s.record_parse_miss("no_date").unwrap();
+    }
+
+    fn is_uuid_v4(s: &str) -> bool {
+        regex::Regex::new(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+            .unwrap()
+            .is_match(s)
+    }
+
+    /// 표마다 최소 칸으로 한 줄 넣기(uid 는 비워 둔다 — 트리거가 채워야 한다).
+    fn insert_bare(conn: &Connection, table: &str) {
+        let sql = match table {
+            "items" => "INSERT INTO items (kind, title, all_day, start_at, end_at, tz, created_at, updated_at)
+                        VALUES ('event', 't', 0, 0, 1, 'Asia/Seoul', 0, 0)",
+            "runs" => "INSERT INTO runs (item_id, started_at, sent_text) VALUES ((SELECT max(id) FROM items), 0, 's')",
+            "proposals" => "INSERT INTO proposals (client, title, all_day, start_at, end_at, created_at)
+                            VALUES ('c', 't', 0, 0, 1, 0)",
+            "errand_proposals" => "INSERT INTO errand_proposals (client, prompt, start_at, created_at) VALUES ('c', 'p', 0, 0)",
+            _ => unreachable!(),
+        };
+        conn.execute(sql, []).unwrap();
+    }
+
+    #[test]
+    fn uid_backfills_old_rows_fills_new_ones_and_never_changes() {
+        // 스키마 6 의 DB(개발 7 사용자)에 줄이 있는 채로 7 이 돈다.
+        let dir = tempfile::tempdir().unwrap();
+        let conn = Connection::open(dir.path().join("ouro.db")).unwrap();
+        for sql in &MIGRATIONS[..6] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.execute_batch("PRAGMA user_version = 6").unwrap();
+        for t in UID_TABLES {
+            insert_bare(&conn, t);
+            insert_bare(&conn, t);
+        }
+        drop(conn);
+
+        let s = Store::open(dir.path()).unwrap();
+        let conn = s.conn();
+        for t in UID_TABLES {
+            insert_bare(&conn, t); // 7 뒤에 들어온 줄
+            let uids: Vec<String> = conn
+                .prepare(&format!("SELECT uid FROM {t} ORDER BY rowid"))
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert_eq!(uids.len(), 3, "{t}");
+            assert!(uids.iter().all(|u| is_uuid_v4(u)), "{t}: {uids:?}");
+            let set: std::collections::HashSet<_> = uids.iter().collect();
+            assert_eq!(set.len(), 3, "{t}: 겹치지 않는다");
+
+            // 한 번 붙은 uid 는 못 바꾸고 못 지운다. 다른 칸 고치기는 그대로 된다.
+            assert!(conn.execute(&format!("UPDATE {t} SET uid = 'x' WHERE rowid = 1"), []).is_err(), "{t}");
+            assert!(conn.execute(&format!("UPDATE {t} SET uid = NULL WHERE rowid = 1"), []).is_err(), "{t}");
+            // 같은 값으로 «바꾸기» 는 바뀐 게 아니다.
+            conn.execute(&format!("UPDATE {t} SET uid = uid WHERE rowid = 1"), []).unwrap();
+        }
+        // 들고 온 uid 보존 + 겹치면 거절(items 로 대표 확인).
+        let theirs = "00000000-0000-4000-8000-000000000000";
+        conn.execute(
+            "INSERT INTO items (kind, title, all_day, start_at, end_at, tz, created_at, updated_at, uid)
+             VALUES ('event', '다른 기기', 0, 0, 1, 'Asia/Seoul', 0, 0, ?1)",
+            [theirs],
+        )
+        .unwrap();
+        let got: String = conn
+            .query_row("SELECT uid FROM items WHERE title = '다른 기기'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(got, theirs);
+        assert!(conn
+            .execute(
+                "INSERT INTO items (kind, title, all_day, start_at, end_at, tz, created_at, updated_at, uid)
+                 VALUES ('event', '겹침', 0, 0, 1, 'Asia/Seoul', 0, 0, ?1)",
+                [theirs],
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn app_paths_give_every_row_a_uid() {
+        // 앱 코드의 INSERT 들(일정·제안)이 uid 를 몰라도 트리거가 채운다.
+        let s = Store::open_in_memory();
+        let e = s.create_event(&timed("a", 10, 20)).unwrap();
+        let uid: String = s.conn().query_row("SELECT uid FROM items WHERE id = ?1", [e.id], |r| r.get(0)).unwrap();
+        assert!(is_uuid_v4(&uid));
+        // 고쳐도 uid 는 그대로.
+        s.update_event(e.id, &timed("b", 10, 30)).unwrap();
+        let after: String = s.conn().query_row("SELECT uid FROM items WHERE id = ?1", [e.id], |r| r.get(0)).unwrap();
+        assert_eq!(uid, after);
     }
 
     #[test]

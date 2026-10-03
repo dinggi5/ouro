@@ -19,7 +19,7 @@ use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, Runtime, WebviewWindow, Window,
+    AppHandle, Emitter, Manager, Runtime, WebviewWindow, Window,
 };
 
 /// 트레이 아이콘 id — rect() 조회·아이콘 교체(개발 5 의 ◯ ◔ ●) 때 다시 찾으려고 고정한다.
@@ -359,12 +359,14 @@ pub(crate) fn on_blur<R: Runtime>(win: &Window<R>) {
     }
 }
 
-/// 메뉴바 아이콘을 만든다. 좌클릭 = 팝오버 토글, 우클릭 = 메뉴(열기·종료).
+/// 메뉴바 아이콘을 만든다. 좌클릭 = 팝오버 토글, 우클릭 = 메뉴(열기·업데이트 확인·종료).
 /// 도크 아이콘이 없으니 종료할 길은 이 메뉴와 ⌘Q 뿐이다 — 빼지 말 것.
 pub(crate) fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let open_i = MenuItem::with_id(app, "open", "Ouro 열기", true, None::<&str>)?;
+    // 업데이트 확인은 팝오버를 띄우고 프론트에게 «지금 확인» 을 알린다 — 결과(노트·설치 버튼)는 팝오버가 보인다(update.rs).
+    let update_i = MenuItem::with_id(app, "update", "업데이트 확인…", true, None::<&str>)?;
     let quit_i = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open_i, &quit_i])?;
+    let menu = Menu::with_items(app, &[&open_i, &update_i, &quit_i])?;
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(Image::from_bytes(ICON_IDLE)?)
@@ -375,6 +377,10 @@ pub(crate) fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => show(app),
+            "update" => {
+                show(app);
+                let _ = app.emit("update-check", ());
+            }
             "quit" => app.exit(0),
             _ => {}
         })

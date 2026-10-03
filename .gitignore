@@ -34,3 +34,6 @@ src-tauri/gen/schemas/
 .codex/
 
 *.log
+
+# 배포 자격증명(scripts/release.sh 가 읽는다, 개발 8)
+scripts/release.env

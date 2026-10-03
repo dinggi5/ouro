@@ -9,6 +9,7 @@
 //   errands 부탁 저장·실행 기록 (개발 5)
 //   dispatch 때가 된 부탁을 `claude -p` 로 보내고 답을 적는 일꾼 (개발 5)
 //   mcp     MCP 사이드카가 묻는 소켓 — 읽기·제안만, 승인은 팝오버에서 (개발 4)
+//   update  인앱 업데이트 — 확인은 저절로, 설치는 사람이 노트를 보고 누를 때만 (개발 8)
 //
 // 이 파일에는 앱 셸만 둔다: 커맨드(프론트가 부르는 문) + run(). 판단은 전부 모듈에 있다.
 
@@ -20,6 +21,7 @@ mod mcp;
 mod parse;
 mod store;
 mod tray;
+mod update;
 
 use std::sync::Arc;
 
@@ -31,8 +33,8 @@ use tauri::{Emitter, Manager, State};
 
 /// 앱 코어. DB 를 못 열었으면 Err 를 그대로 들고 산다 — 앱이 켜지다 죽으면 사용자는 «메뉴바에 아무것도 없다» 만 보지만,
 /// 이렇게 두면 팝오버가 뜨고 무엇이 잘못됐는지 한 줄로 보여 줄 수 있다.
-struct Core {
-    store: Arc<Store>,
+pub(crate) struct Core {
+    pub(crate) store: Arc<Store>,
     presence: Arc<mcp::Presence>,
     alerts: alerts::Alerts,
     dispatcher: dispatch::Dispatcher,
@@ -41,7 +43,7 @@ struct Core {
     _instance: std::fs::File,
 }
 
-type CoreState = Result<Core, String>;
+pub(crate) type CoreState = Result<Core, String>;
 
 fn core<'a>(state: &'a State<'_, CoreState>) -> Result<&'a Core, String> {
     state.inner().as_ref().map_err(Clone::clone)
@@ -305,7 +307,9 @@ fn hide_popover(app: tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(tray::PopoverState::default())
+        .manage(update::PendingUpdate::default())
         .setup(|app| {
             app.manage(open_core(app.handle()));
             // 도크 아이콘 없이 메뉴바에만 산다(tray.rs 머리 주석). 정본은 Info.plist 의 LSUIElement 다 —
@@ -357,7 +361,9 @@ pub fn run() {
             list_errand_proposals,
             approve_errand_proposal,
             reject_errand_proposal,
-            mcp_clients
+            mcp_clients,
+            update::check_update,
+            update::install_update
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
