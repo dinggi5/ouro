@@ -147,7 +147,7 @@ MCP 명세 <https://modelcontextprotocol.io/specification>, iCalendar RRULE RFC 
 | `get_proposal(id)` | 제안 상태 — **개발 4** | 없음 |
 | `list_errands` / `get_run(id)` | 부탁·답 읽기 | 없음 |
 | `propose_event(...)` | 일정 제안 → 팝오버에 카드. **개발 4 로 앞당김**(개발 3, 사장 — 복잡한 자연어는 규칙 파서 대신 AI 가 맡는다) | **사람 한 번 클릭** |
-| `propose_errand(...)` | 부탁 제안 — **개발 6** | **사람 승인 + 보낼 원문 표시** |
+| `propose_errand(...)` | 부탁 제안 — **개발 6**. `target`(claude/codex)은 개발 7. AI 제안은 한 번짜리만(반복·이어서는 사람이 정한다) | **사람 승인 + 보낼 원문 표시** |
 | `get_errand_proposal(id)` | 부탁 제안 상태(받은 뒤엔 상태·`run_id` 만, 글·답 없음) — **개발 6** | 없음 |
 | `update/delete_event` | v0.2 이후. 삭제는 항상 승인 | 승인 |
 
@@ -157,7 +157,7 @@ MCP 명세 <https://modelcontextprotocol.io/specification>, iCalendar RRULE RFC 
 
 ## 9. 디스패처 — 안전 규칙
 
-1. **실행 주체**: `claude -p "<부탁>" --output-format json` (+ `--resume`), `codex exec -s read-only --json -o <파일>`.
+1. **실행 주체**: `claude -p --output-format json` (+ `--resume`), `codex exec --json --ignore-user-config --ignore-rules` + 읽기 전용 + 도구 기능 끔 (+ `exec resume`) — 개발 7. 문장은 둘 다 표준입력.
 2. **기본 권한은 읽기 전용.** Claude 는 `--allowedTools` 를 부탁 카드에서 명시한 것만(기본 없음 = 대화만). 작업 폴더는 부탁마다 `~/.ouro/runs/<id>/`. 코드 저장소를 건드리는 부탁은 카드에서 폴더를 **사람이** 고른다.
 3. **맥이 잠들어 있었다면**: 예약 시각을 놓친 부탁은 깨어날 때 «늦게 실행 / 건너뜀» 중 부탁별 설정대로. 조용히 몇 시간 늦게 돌지 않는다 — 카드에 «2시간 늦게 실행됨» 을 남긴다.
 4. **순환 제한**: AI 가 만든 부탁은 승인 전엔 절대 안 돈다. 한 답에서 파생되는 부탁 깊이 ≤ 3, 하루 실행 수 상한(설정).
@@ -193,7 +193,7 @@ MCP 명세 <https://modelcontextprotocol.io/specification>, iCalendar RRULE RFC 
 | 4 | `ouro-mcp` 읽기 도구 + **일정 제안(`propose_event`) + 승인 카드** + 소켓 + 하트비트 | Claude Code 에서 「내일 일정」, 「금요일 3시 치과 넣어 줘」 → 팝오버 카드 → 한 번 클릭 |
 | 5 | 부탁 모델 + 디스패처(Claude) + 답 표시 — **완료** | 예약 부탁이 돌고 답이 캘린더에 |
 | 6 | MCP 제안 도구 + 승인 카드 + 순환 제한 — **완료** | Claude 가 제안 → 내가 승인 → 실행 |
-| 7 | Codex·반복·이어서 부탁·브리핑 | |
+| 7 | Codex·반복·이어서 부탁·브리핑 — **완료** (반복은 부탁만, 일정 반복은 뒤로) | Codex 부탁이 돌고, 매일 부탁이 지난 대화를 이어 돈다 |
 | 8 | 서명·업데이트·배포·.mcpb | brew 설치 |
 | 나중 | 로컬 엔진 — **사장이 정할 때만** | §7 «못 알아들은 입력» 숫자를 보고 판단 |
 
