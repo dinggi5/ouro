@@ -62,7 +62,7 @@
     "longDescription": "이 맥에만 저장되는 메뉴바 캘린더. 정해진 시간에 Claude·Codex 에게 일을 부탁하고, 답을 다시 캘린더에 걸어 둔다.",
     "macOS": {
       "hardenedRuntime": true,
-      "minimumSystemVersion": "26.0"
+      "minimumSystemVersion": "11.0"
     }
   }
 }

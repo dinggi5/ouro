@@ -752,6 +752,10 @@ APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$
   "앱 Info.plist 버전이 $APP_VERSION 인데 빌드 버전은 $VERSION_CONF 다"
 [[ -n "$APP_EXEC" && -f "$APP_PATH/Contents/MacOS/$APP_EXEC" ]] || die \
   "앱 실행 파일을 못 찾음 (CFBundleExecutable=$APP_EXEC)"
+# 최소 macOS 의 정본은 src-tauri/Info.plist 다(tauri.conf.json 은 링커 문제로 11.0 — Info.plist 주석). 덮어쓰기가 빠지면
+# 26 미만 맥에서도 설치·실행이 시도되는데, 거기선 시험해 본 적이 없다. 캐스크(depends_on macos: >= :tahoe)와 같은 약속.
+APP_MIN_OS="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP_PATH/Contents/Info.plist" 2>/dev/null || true)"
+[[ "$APP_MIN_OS" == "26.0" ]] || die "앱의 LSMinimumSystemVersion 이 '$APP_MIN_OS' 다 (기대 26.0, src-tauri/Info.plist)"
 
 # 캐스크가 depends_on arch: :arm64 로 약속하는 값. 유니버설이면 두 아키텍처가 다 있어야 한다.
 APP_ARCHS="$(lipo -archs "$APP_PATH/Contents/MacOS/$APP_EXEC" 2>/dev/null || true)"
