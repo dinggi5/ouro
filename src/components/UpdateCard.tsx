@@ -6,8 +6,9 @@ import type { UpdateState } from "../lib/update";
 const CARD =
   "toast-in mx-5 mt-4 flex shrink-0 flex-col gap-1 rounded-lg bg-surface px-4 pt-3 pb-4 shadow-[0_2px_10px_rgba(0,27,55,0.10),0_3px_20px_rgba(2,32,71,0.05)] ring-1 ring-hairline";
 
-export function UpdateCard({ u }: { u: UpdateState }) {
-  if (!u.open) return null;
+/** `hidden` = AI 제안 카드가 떠 있다. 둘이 겹치면 640 창에서 버튼이 밀려나므로(코덱스 개발 8 1차) 제안이 먼저고, 업데이트는 아래 한 줄로 물러난다. */
+export function UpdateCard({ u, hidden }: { u: UpdateState; hidden: boolean }) {
+  if (!u.open || hidden) return null;
   if (!u.info) {
     // 사람이 확인을 눌렀는데 최신이거나, 확인이 실패했을 때.
     return (
@@ -60,9 +61,9 @@ export function UpdateCard({ u }: { u: UpdateState }) {
   );
 }
 
-/** 저절로 찾았을 때 아래에 한 줄 — 누르면 카드를 펼친다. */
-export function UpdateLine({ u }: { u: UpdateState }) {
-  if (!u.info || u.open) return null;
+/** 저절로 찾았을 때(또는 카드가 제안에 밀렸을 때) 아래에 한 줄 — 누르면 카드를 펼친다. */
+export function UpdateLine({ u, cardHidden }: { u: UpdateState; cardHidden: boolean }) {
+  if (!u.info || (u.open && !cardHidden)) return null;
   return (
     <button
       type="button"

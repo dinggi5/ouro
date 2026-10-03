@@ -37,7 +37,7 @@ pub(crate) struct Core {
     pub(crate) store: Arc<Store>,
     presence: Arc<mcp::Presence>,
     alerts: alerts::Alerts,
-    dispatcher: dispatch::Dispatcher,
+    pub(crate) dispatcher: dispatch::Dispatcher,
     dir: std::path::PathBuf,
     /// 한 데이터 폴더에 앱 하나만 — 프로세스가 사는 동안 쥔다.
     _instance: std::fs::File,

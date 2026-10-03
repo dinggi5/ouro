@@ -645,7 +645,7 @@ function App() {
         />
       )}
 
-      <UpdateCard u={update} />
+      <UpdateCard u={update} hidden={!!top} />
 
       <section className="min-h-0 flex-1 overflow-y-auto px-5 pt-4 pb-5">
         {fatal ? (
@@ -700,7 +700,7 @@ function App() {
         </p>
       )}
 
-      <UpdateLine u={update} />
+      <UpdateLine u={update} cardHidden={!!top} />
 
       {backupError && (
         <p role="alert" className="shrink-0 truncate px-5 pt-2 text-micro text-danger" title={backupError}>

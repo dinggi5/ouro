@@ -38,9 +38,11 @@ export function useUpdate(): UpdateState {
   const [installing, setInstalling] = useState(false);
   const [progress, setProgress] = useState<number | null>(null);
   const busy = useRef(false);
+  // 설치 중엔 확인하지 않는다 — 받는 동안 새 버전이 화면을 덮으면 «본 것과 다른 것» 을 누르게 된다(러스트도 막는다).
+  const installingRef = useRef(false);
 
   const check = useCallback(async (manual: boolean) => {
-    if (busy.current) return;
+    if (busy.current || installingRef.current) return;
     busy.current = true;
     setChecking(true);
     if (manual) setMessage(null);
@@ -83,16 +85,18 @@ export function useUpdate(): UpdateState {
   }, [check]);
 
   const install = useCallback(() => {
-    if (installing) return;
+    if (installingRef.current) return;
+    installingRef.current = true;
     setInstalling(true);
     setMessage(null);
     setProgress(null);
     // 성공하면 앱이 다시 켜져 여기로 돌아오지 않는다. 돌아왔다면 실패(부탁이 도는 중 등) — 문장을 보인다.
     invoke("install_update").catch((e) => {
+      installingRef.current = false;
       setInstalling(false);
       setMessage(errorText(e));
     });
-  }, [installing]);
+  }, []);
 
   return {
     info,

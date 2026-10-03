@@ -80,7 +80,10 @@ brew uninstall --cask ouro        # 또는 Ouro.app 을 휴지통으로
 ```
 
 앱을 지워도 **캘린더는 남아요** — `~/.ouro/`(일정 DB 와 7일치 백업)는 일부러 안 지워요(`--zap` 도 안 지워요).
-정말 다 지우려면 `rm -rf ~/.ouro` 를 직접 실행하세요. 되돌릴 수 없어요.
+Ouro 의 기록을 다 지우려면 `rm -rf ~/.ouro` 를 직접 실행하세요. 되돌릴 수 없어요.
+
+부탁의 대화는 Claude Code·Codex 도 **자기 쪽에** 저장해요(그래야 «이어서» 가 돼요) — `~/.claude/projects/` 아래 이름에 `-ouro-runs-` 가 든 폴더,
+`~/.codex/sessions/`. 이건 `~/.ouro` 를 지워도 남으니, 지우려면 각 CLI 의 기록을 따로 지우세요.
 
 ## 소스에서 빌드
 

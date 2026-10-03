@@ -60,6 +60,10 @@ pub(crate) struct Dispatcher {
     queued: Arc<Mutex<HashSet<i64>>>,
     /// 끄는 중 — 새 실행을 시작하지 않는다.
     closing: Arc<AtomicBool>,
+    /// 업데이트 설치 중 — 새 실행을 시작하지 않는다(update.rs). 플래그를 **잠금 안에** 둔 이유: 일꾼은 «잡혀 있나 확인 → 실행 확보»
+    /// 를 이 잠금을 쥔 채 하고, 설치는 이 잠금을 쥐고 플래그를 세운 **뒤에** «도는 부탁이 있나» 를 DB 에 묻는다 —
+    /// 그래서 확인과 확보 사이에 끼어든 실행이 재시작에 휩쓸리는 틈이 없다(코덱스 개발 8 1차 P1).
+    hold: Arc<Mutex<bool>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -93,6 +97,17 @@ impl Dispatcher {
             }
             std::thread::sleep(Duration::from_millis(100));
         }
+    }
+
+    /// 새 실행을 막는다. 이 함수가 돌아온 뒤엔 일꾼이 새로 확보하는 실행이 없다 — 막 확보하던 것은 이미 DB 에 «도는 중» 으로 있다.
+    pub(crate) fn hold(&self) {
+        *lock(&self.hold) = true;
+    }
+
+    /// `hold` 를 푼다(설치가 실패했을 때). 막혀 있던 부탁은 다음 바퀴에 돈다.
+    pub(crate) fn release(&self) {
+        *lock(&self.hold) = false;
+        self.poke();
     }
 
     /// 도는 실행을 멈춘다. 돌고 있었으면 true.
@@ -473,7 +488,8 @@ pub(crate) fn start(store: Arc<Store>, dir: PathBuf, on_change: OnChange) -> Dis
     let stops: Stops = Arc::default();
     let queued: Arc<Mutex<HashSet<i64>>> = Arc::default();
     let closing = Arc::new(AtomicBool::new(false));
-    let (st, qd, cl) = (stops.clone(), queued.clone(), closing.clone());
+    let hold: Arc<Mutex<bool>> = Arc::default();
+    let (st, qd, cl, hd) = (stops.clone(), queued.clone(), closing.clone(), hold.clone());
     std::thread::Builder::new()
         .name("ouro-dispatch".into())
         .spawn(move || {
@@ -489,15 +505,27 @@ pub(crate) fn start(store: Arc<Store>, dir: PathBuf, on_change: OnChange) -> Dis
                         manual.push((id, at));
                     }
                 }
+                let mut held_back = vec![];
                 for (id, since) in manual.drain(..) {
-                    lock(&qd).remove(&id);
                     if cl.load(Ordering::SeqCst) {
+                        lock(&qd).remove(&id);
                         continue;
                     }
-                    if let Ok(Some((run_id, d, _))) = store.claim_run(id, Claim::Manual { since }, |_, _| None) {
+                    let claimed = {
+                        let held = lock(&hd);
+                        if *held {
+                            // 업데이트 설치 중 — 누른 «지금 실행» 은 버리지 않고 줄에 남긴다(설치가 실패하면 그때 돈다).
+                            held_back.push((id, since));
+                            continue;
+                        }
+                        lock(&qd).remove(&id);
+                        store.claim_run(id, Claim::Manual { since }, |_, _| None)
+                    };
+                    if let Ok(Some((run_id, d, _))) = claimed {
                         execute(&store, &dir, &st, &cl, &on_change, run_id, &d);
                     }
                 }
+                manual = held_back;
                 match store.due_errands(now) {
                     Ok(due) => {
                         for d in due {
@@ -510,7 +538,15 @@ pub(crate) fn start(store: Arc<Store>, dir: PathBuf, on_change: OnChange) -> Dis
                                 continue;
                             }
                             // 목록을 읽은 뒤 사람이 고치거나 지웠을 수 있다 — 확보할 때 현재 값으로 다시 읽는다.
-                            match store.claim_run(d.id, Claim::Scheduled, skip) {
+                            // 업데이트 설치 중이면 확보하지 않는다 — 잠금을 쥔 채 확인·확보한다(`hold` 주석).
+                            let claimed = {
+                                let held = lock(&hd);
+                                if *held {
+                                    break;
+                                }
+                                store.claim_run(d.id, Claim::Scheduled, skip)
+                            };
+                            match claimed {
                                 Ok(Some((_, cur, true))) => {
                                     on_change();
                                     notify(&title_of(&cur.prompt), "건너뛰었어요 — 예약한 시각을 놓쳤어요");
@@ -535,7 +571,7 @@ pub(crate) fn start(store: Arc<Store>, dir: PathBuf, on_change: OnChange) -> Dis
             }
         })
         .expect("디스패처 스레드를 띄우지 못했어요");
-    Dispatcher { tx, stops, queued, closing }
+    Dispatcher { tx, stops, queued, closing, hold }
 }
 
 #[cfg(test)]
@@ -666,9 +702,42 @@ mod tests {
     }
 
     #[test]
+    fn hold_keeps_due_and_manual_errands_from_starting_until_release() {
+        // 업데이트 설치(update.rs)가 붙잡은 동안엔 때가 된 부탁도 «지금 실행» 도 확보되지 않는다. 풀면 돈다.
+        // 실행 결과(성공·실패)는 보지 않는다 — 다른 테스트가 OURO_CLAUDE 를 바꿔도 «기록이 생겼나» 만 본다.
+        use crate::errands::ErrandInput;
+        let d = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open_in_memory());
+        let disp = start(store.clone(), d.path().to_path_buf(), Arc::new(|| {}));
+        disp.hold();
+        let due = store
+            .create_errand(&ErrandInput { prompt: "때 됨".into(), start_at: now_ms() - 1_000, ..ErrandInput::default() })
+            .unwrap();
+        let later = store
+            .create_errand(&ErrandInput { prompt: "지금".into(), start_at: now_ms() + 3_600_000, ..ErrandInput::default() })
+            .unwrap();
+        disp.poke();
+        assert!(disp.run_now(later.id));
+        std::thread::sleep(Duration::from_millis(400));
+        let started = |id| store.get_errand(id).unwrap().unwrap().run.is_some();
+        assert!(!started(due.id) && !started(later.id), "붙잡힌 동안엔 아무것도 시작하지 않는다");
+        assert!(!disp.run_now(later.id), "막힌 «지금 실행» 은 버리지 않고 줄에 남는다");
+
+        disp.release();
+        for _ in 0..100 {
+            if started(due.id) && started(later.id) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(started(due.id) && started(later.id), "풀면 둘 다 돈다");
+        disp.shutdown();
+    }
+
+    #[test]
     fn run_now_twice_queues_once() {
         let (tx, rx) = mpsc::channel();
-        let d = Dispatcher { tx, stops: Arc::default(), queued: Arc::default(), closing: Arc::default() };
+        let d = Dispatcher { tx, stops: Arc::default(), queued: Arc::default(), closing: Arc::default(), hold: Arc::default() };
         assert!(d.run_now(7));
         assert!(!d.run_now(7), "두 번 눌러도 한 번");
         assert!(d.run_now(8));
