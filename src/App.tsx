@@ -570,8 +570,11 @@ function App() {
   // 키보드: ⌘W 닫기(창이 무테라 AppKit 이 안 준다, Kura 개발 58), ⌘N 빠른 입력으로, Esc 시트 닫기, ←/→ 넘기기, T 오늘.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const typing = e.target instanceof HTMLElement && e.target.closest("input, textarea, select");
       // + 메뉴가 열려 있으면 메뉴만 — Esc 로 닫고, ←/→·T 가 뒤의 날짜를 넘기지 않게(코덱스 개발 8).
-      if (addMenu) {
+      // 탭으로 입력칸에 가 있으면 메뉴를 닫고 글자는 그대로 칠 수 있게(코덱스 개발 8 2차).
+      if (addMenu && typing) setAddMenu(false);
+      else if (addMenu) {
         if (e.key === "Escape" || e.metaKey) {
           e.preventDefault();
           setAddMenu(false);
@@ -580,7 +583,6 @@ function App() {
         }
         return;
       }
-      const typing = e.target instanceof HTMLElement && e.target.closest("input, textarea, select");
       if (e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
         const k = e.key.toLowerCase();
         if (k === "w") {
