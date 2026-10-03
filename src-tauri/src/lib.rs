@@ -3,7 +3,8 @@
 // 모듈 지도:
 //   tray    메뉴바 상주 — 트레이 아이콘 + 팝오버 위치·자동 숨김 (Kura 에서 이식, 개발 1)
 //   store   ~/.ouro/ouro.db — 일정·부탁·실행 (개발 2)
-//   alerts  일정 알림 + 매일 백업을 도는 시계 스레드 (개발 2)
+//   alerts  일정 알림 + 매일 백업 + 아침 브리핑을 도는 시계 스레드 (개발 2·7)
+//   brief   오늘 일정·겹침·빈 시간을 규칙으로 센다 (개발 7)
 //   parse   빠른 입력 규칙 파서 «내일 3시 치과» → 초안 (개발 3)
 //   errands 부탁 저장·실행 기록 (개발 5)
 //   dispatch 때가 된 부탁을 `claude -p` 로 보내고 답을 적는 일꾼 (개발 5)
@@ -12,6 +13,7 @@
 // 이 파일에는 앱 셸만 둔다: 커맨드(프론트가 부르는 문) + run(). 판단은 전부 모듈에 있다.
 
 mod alerts;
+mod brief;
 mod dispatch;
 mod errands;
 mod mcp;
@@ -121,7 +123,7 @@ fn run_errand_now(state: State<'_, CoreState>, id: i64) -> Result<(), String> {
     if c.store.is_running(id)? {
         return Err("이미 도는 중이에요".into());
     }
-    if c.store.errand_for_run(id)?.is_none() {
+    if !c.store.errand_runnable(id)? {
         return Err("없는 부탁이거나 아직 승인 전이에요".into());
     }
     if !c.dispatcher.run_now(id) {
@@ -142,6 +144,18 @@ fn stop_run(state: State<'_, CoreState>, run_id: i64) -> Result<(), String> {
 #[tauri::command]
 fn mark_run_read(state: State<'_, CoreState>, run_id: i64) -> Result<(), String> {
     core(&state)?.store.mark_run_read(run_id)
+}
+
+/// 오늘 브리핑(로컬 계산 — 바깥으로 안 나간다).
+#[tauri::command]
+fn briefing(state: State<'_, CoreState>) -> Result<brief::Briefing, String> {
+    brief::today(&core(&state)?.store, store::now_ms())
+}
+
+/// 아침 브리핑 알림 켬/끔.
+#[tauri::command]
+fn set_morning_briefing(state: State<'_, CoreState>, on: bool) -> Result<(), String> {
+    core(&state)?.store.set_setting(brief::KEY_ON, if on { "on" } else { "off" })
 }
 
 /// 창 [from, to) (UTC ms) 에 걸치는 일정.
@@ -328,6 +342,8 @@ pub fn run() {
             run_errand_now,
             stop_run,
             mark_run_read,
+            briefing,
+            set_morning_briefing,
             create_event,
             update_event,
             delete_event,

@@ -1,9 +1,9 @@
 // AI 의 부탁 제안 카드 — 목록 위에 뜬다. **보낼 원문이 그대로** 보이고, «승인» 해야만 부탁이 된다(그제야 때가 되면 돈다).
 //
-// 일정 제안 카드(`ProposalCard`)와 같은 틀 — 머리의 «◯ Claude Code 부탁 제안» 만 액센트, 주 버튼은 먹색.
+// 일정 제안 카드(`ProposalCard`)와 같은 틀 — 머리의 «◯ … 부탁 제안» 만 액센트, 주 버튼은 먹색.
 // 글은 글자로만 그린다(`whitespace-pre-wrap`) — 바깥에서 온 글은 마크업도 명령도 아니다. 길면 상자 안에서 스크롤(카드가 목록을 덮지 않게).
 
-import { LATE_OPTIONS, TOOL_OPTIONS } from "../lib/errands";
+import { LATE_OPTIONS, targetLabel, TOOL_OPTIONS } from "../lib/errands";
 import type { ErrandProposal } from "../lib/proposals";
 import { clientLabel, errandWhen } from "../lib/proposals";
 
@@ -42,7 +42,9 @@ export function ErrandProposalCard({
           <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" className="shrink-0">
             <circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
           </svg>
-          <span className="truncate">{clientLabel(p.client)} 부탁 제안</span>
+          <span className="truncate">
+            {clientLabel(p.client)} 부탁 제안 · {targetLabel(p.target)} 에게
+          </span>
         </span>
         {total > 1 && <span className="num shrink-0 text-ink-muted">1 / {total}</span>}
       </div>
@@ -53,7 +55,7 @@ export function ErrandProposalCard({
       <p className="select-text mt-1 max-h-28 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-surface-sunken px-3 py-2.5 text-caption text-ink">
         {p.prompt}
       </p>
-      <p className="text-micro text-ink-muted">승인하면 때가 될 때 위 글이 그대로 Claude Code 로 나가요 · {meta.join(" · ")}</p>
+      <p className="text-micro text-ink-muted">승인하면 때가 될 때 위 글이 그대로 {targetLabel(p.target)} 로 나가요 · {meta.join(" · ")}</p>
       <div className="mt-3 flex gap-2">
         <button
           type="button"

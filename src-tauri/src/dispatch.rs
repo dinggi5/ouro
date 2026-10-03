@@ -1,4 +1,4 @@
-// 디스패처 — 때가 된 부탁을 `claude -p` 로 보내고, 답을 받아 `runs` 에 적는다(PLAN §9).
+// 디스패처 — 때가 된 부탁을 `claude -p`·`codex exec` 로 보내고, 답을 받아 `runs` 에 적는다(PLAN §9).
 //
 // 설계 결정:
 //   · **한 번에 하나.** 일꾼 스레드 하나가 줄 세워 돌린다 — 구독 한도·맥 부하를 부탁이 몰려도 지키고, 로직이 단순하다.
@@ -12,6 +12,12 @@
 //   · 시간 제한 10분, 하루 실행 상한 30(예약 실행만 — 사람이 누른 «지금 실행» 은 세지만 막지 않는다). 프로세스 그룹째 멈춘다.
 //   · 앱이 꺼진 채 남은 «도는 중» 은 켤 때 «끊김» 으로 닫는다 — 프로세스가 이미 없다.
 //   · `claude` 는 Finder 로 켠 앱의 좁은 PATH 에선 안 보인다 — 흔한 설치 자리, 안 되면 로그인 셸에 물어 찾는다(개발 5 첫 확인 거리).
+//   · **Codex(개발 7)도 «대화만»** 이 기본이다: `--ignore-user-config`(사용자 config 의 MCP 서버·모델·권한을 안 읽음) +
+//     `--ignore-rules` + 읽기 전용 샌드박스 + 셸·앱·플러그인·브라우저·컴퓨터 조작 등 도구 기능을 `-c features.X=false` 로 끈다.
+//     `--disable X` 가 아니라 `-c` 인 이유: 모르는 기능 이름을 `--disable` 은 **오류로 끝내고** `-c` 는 경고만 한다(2026-10-03 실측,
+//     codex 0.159) — Codex 가 기능 하나를 없애는 업데이트로 모든 Codex 부탁이 멈추지 않게. 웹 검색은 `web_search` 를 live/disabled 로.
+//   · **이어서**(개발 7): `claude --resume <id>` · `codex exec resume <id>`. 대화 번호는 AI 쪽에서 온 글이라 모양을 확인하고 쓴다
+//     (`-` 로 시작하면 플래그로 읽힌다). Claude Code 는 대화를 작업 폴더별로 두므로 이을 땐 같은 폴더(`Due::folder`)에서 돈다.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
@@ -118,8 +124,8 @@ fn decide(late: &str, late_ms: i64) -> Decision {
     }
 }
 
-/// `claude` 에 줄 인자 (순수). 부탁 문장은 표준입력으로 간다.
-fn claude_args(allowed_tools: &str) -> Vec<String> {
+/// `claude` 에 줄 인자 (순수). 부탁 문장은 표준입력으로 간다. `session` = 이을 대화.
+fn claude_args(allowed_tools: &str, session: Option<&str>) -> Vec<String> {
     let mut a: Vec<String> = ["-p", "--output-format", "json", "--strict-mcp-config", "--permission-mode", "default"]
         .iter()
         .map(|s| s.to_string())
@@ -130,35 +136,91 @@ fn claude_args(allowed_tools: &str) -> Vec<String> {
     if !allowed_tools.is_empty() {
         a.extend(["--allowedTools".into(), allowed_tools.into()]);
     }
+    if let Some(sid) = session {
+        a.extend(["--resume".into(), sid.into()]);
+    }
     a
 }
 
-/// `claude` 를 찾는다. 디버그 빌드에선 `OURO_CLAUDE` 로 바꿀 수 있다(테스트용 가짜 실행 파일).
-fn find_claude() -> Result<PathBuf, String> {
+/// Codex 에서 끄는 기능 — 부탁은 «대화만»(+ 고르면 웹 검색)이다. 셸·파일 보기·앱·플러그인·브라우저·컴퓨터 조작·기억·하위 에이전트 등.
+const CODEX_OFF: [&str; 21] = [
+    "shell_tool",
+    "unified_exec",
+    "shell_snapshot",
+    "apps",
+    "plugins",
+    "remote_plugin",
+    "browser_use",
+    "browser_use_external",
+    "in_app_browser",
+    "computer_use",
+    "memories",
+    "multi_agent",
+    "image_generation",
+    "hooks",
+    "view_image",
+    "skill_mcp_dependency_install",
+    "tool_suggest",
+    "goals",
+    "daemon_auto_start",
+    "workspace_dependencies",
+    "sleep_tool",
+];
+
+/// 대화 번호가 인자로 써도 되는 모양인가 — 영문·숫자·`-`·`_` 만, 플래그처럼 `-` 로 시작하지 않게.
+fn safe_session(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 128 && !s.starts_with('-') && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// `codex` 에 줄 인자 (순수). 부탁 문장은 표준입력(`-`)으로 간다.
+fn codex_args(allowed_tools: &str, session: Option<&str>) -> Vec<String> {
+    let mut a: Vec<String> = vec!["exec".into()];
+    if session.is_some() {
+        a.push("resume".into());
+    }
+    a.extend(["--ignore-user-config", "--ignore-rules", "--skip-git-repo-check", "--json"].map(String::from));
+    let web = if allowed_tools == "WebSearch" { "live" } else { "disabled" };
+    a.extend(["-c".into(), "sandbox_mode=\"read-only\"".into(), "-c".into(), format!("web_search=\"{web}\"")]);
+    for f in CODEX_OFF {
+        a.extend(["-c".into(), format!("features.{f}=false")]);
+    }
+    if let Some(sid) = session {
+        a.push(sid.into());
+    }
+    a.push("-".into());
+    a
+}
+
+/// 부탁을 받는 쪽의 실행 파일을 찾는다. 디버그 빌드에선 `OURO_CLAUDE`·`OURO_CODEX` 로 바꿀 수 있다(테스트용 가짜 실행 파일).
+fn find_cli(target: &str) -> Result<PathBuf, String> {
+    let (name, label) = if target == "codex" { ("codex", "Codex(`codex`)") } else { ("claude", "Claude Code(`claude`)") };
     #[cfg(debug_assertions)]
-    if let Some(p) = std::env::var_os("OURO_CLAUDE") {
+    if let Some(p) = std::env::var_os(if target == "codex" { "OURO_CODEX" } else { "OURO_CLAUDE" }) {
         return Ok(PathBuf::from(p));
     }
     let home = dirs::home_dir();
     let mut cands: Vec<PathBuf> = vec![];
     if let Some(h) = &home {
-        for rel in [".local/bin/claude", ".claude/local/claude", ".npm-global/bin/claude", ".bun/bin/claude"] {
-            cands.push(h.join(rel));
-        }
+        let rels: &[&str] = if target == "codex" {
+            &[".local/bin/codex", ".npm-global/bin/codex", ".bun/bin/codex", ".volta/bin/codex"]
+        } else {
+            &[".local/bin/claude", ".claude/local/claude", ".npm-global/bin/claude", ".bun/bin/claude"]
+        };
+        cands.extend(rels.iter().map(|r| h.join(r)));
     }
-    cands.extend(["/opt/homebrew/bin/claude", "/usr/local/bin/claude"].map(PathBuf::from));
+    cands.extend(["/opt/homebrew/bin", "/usr/local/bin"].map(|d| Path::new(d).join(name)));
     if let Some(p) = cands.into_iter().find(|p| p.is_file()) {
         return Ok(p);
     }
     // 로그인 셸의 PATH — nvm 같은 곳에 깔았을 때. 대화형(-i)은 rc 파일 잡음이 섞이니 마지막 «/» 로 시작하는 줄만 쓴다.
     let mut child = Command::new("/bin/zsh")
-        .args(["-lic", "command -v claude"])
+        .args(["-lic", &format!("command -v {name}")])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .process_group(0)
         .spawn()
-        .map_err(|e| format!("Claude Code 를 찾는 중 셸을 못 띄웠어요: {e}"))?;
+        .map_err(|e| format!("{label} 를 찾는 중 셸을 못 띄웠어요: {e}"))?;
     let out = drain(child.stdout.take().unwrap());
     // rc 파일이 입력을 기다리며 멈출 수 있다 — 5초만 기다리고 접는다(코덱스 개발 5: 이 대기는 중단 버튼으로도 안 끊긴다).
     let started = Instant::now();
@@ -178,7 +240,37 @@ fn find_claude() -> Result<PathBuf, String> {
         .map(str::trim)
         .find(|l| l.starts_with('/') && Path::new(l).is_file())
         .map(PathBuf::from)
-        .ok_or_else(|| "Claude Code(`claude`)를 못 찾았어요 — 설치돼 있고 로그인돼 있어야 해요".to_string())
+        .ok_or_else(|| format!("{label}를 못 찾았어요 — 설치돼 있고 로그인돼 있어야 해요"))
+}
+
+/// `codex exec --json` 의 출력(JSONL 이벤트) → 결과. 답 = 마지막 `agent_message`, 대화 번호 = `thread.started` 의 `thread_id`.
+/// `item` 의 `error` 는 경고(모르는 설정 등)라 실패로 치지 않는다 — 실패는 `turn.failed` 와 맨 위 `error` 이벤트다.
+fn parse_codex_output(stdout: &str, stderr: &str, exit_code: Option<i32>) -> Outcome {
+    let (mut text, mut session, mut why): (Option<String>, Option<String>, Option<String>) = (None, None, None);
+    for v in stdout.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l.trim()).ok()) {
+        match v["type"].as_str() {
+            Some("thread.started") => session = v["thread_id"].as_str().map(str::to_string),
+            Some("item.completed") if v["item"]["type"] == "agent_message" => text = v["item"]["text"].as_str().map(str::to_string),
+            Some("turn.failed") => why = v["error"]["message"].as_str().map(str::to_string).or(why),
+            Some("error") => why = why.or(v["message"].as_str().map(str::to_string)),
+            _ => {}
+        }
+    }
+    // 오류 문장 안에 API 오류 JSON 이 통째로 들어 있기도 하다 — 사람이 읽을 `error.message` 만 꺼낸다.
+    let why = why.map(|w| {
+        serde_json::from_str::<serde_json::Value>(&w)
+            .ok()
+            .and_then(|j| j["error"]["message"].as_str().map(str::to_string))
+            .unwrap_or(w)
+    });
+    let ok = exit_code == Some(0) && why.is_none() && text.as_ref().is_some_and(|t| !t.trim().is_empty());
+    if ok {
+        return Outcome { status: "done", exit_code, response: text, stderr: Some(stderr.to_string()), session_id: session };
+    }
+    let reason = why
+        .or_else(|| Some(stderr.trim().to_string()).filter(|s| !s.is_empty()))
+        .unwrap_or_else(|| if text.is_none() { "답이 비어 있어요".into() } else { "Codex 가 오류로 끝났어요".into() });
+    Outcome { status: "failed", exit_code, response: None, stderr: Some(reason), session_id: session }
 }
 
 /// `claude --output-format json` 의 출력 → 결과. 종료 상태와 `is_error` 를 같이 본다(로그인 안 됨 같은 오류도 종료코드 1 + JSON 이다).
@@ -251,7 +343,15 @@ fn kill_group(pid: u32) {
 }
 
 /// 프로세스를 돌려 끝날 때까지 기다린다. `stop` 이 켜지면 멈추고(stopped), `timeout` 을 넘으면 멈춘다(failed).
-fn run_process(exe: &Path, args: &[String], prompt: &str, cwd: &Path, stop: &AtomicBool, timeout: Duration) -> Outcome {
+fn run_process(
+    exe: &Path,
+    args: &[String],
+    prompt: &str,
+    cwd: &Path,
+    stop: &AtomicBool,
+    timeout: Duration,
+    parse: fn(&str, &str, Option<i32>) -> Outcome,
+) -> Outcome {
     let fail = |msg: String| Outcome { status: "failed", exit_code: None, response: None, stderr: Some(msg), session_id: None };
     let path_env = format!(
         "{}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
@@ -268,7 +368,7 @@ fn run_process(exe: &Path, args: &[String], prompt: &str, cwd: &Path, stop: &Ato
         .spawn()
     {
         Ok(c) => c,
-        Err(e) => return fail(format!("`claude` 를 못 띄웠어요: {e}")),
+        Err(e) => return fail(format!("`{}` 를 못 띄웠어요: {e}", exe.file_name().map(|n| n.to_string_lossy()).unwrap_or_default())),
     };
     let pid = child.id();
     if let Some(mut stdin) = child.stdin.take() {
@@ -309,7 +409,7 @@ fn run_process(exe: &Path, args: &[String], prompt: &str, cwd: &Path, stop: &Ato
     if timed_out {
         return fail(format!("{}분을 넘겨 멈췄어요", timeout.as_secs() / 60));
     }
-    parse_output(&stdout, &stderr, status.and_then(|s| s.code()))
+    parse(&stdout, &stderr, status.and_then(|s| s.code()))
 }
 
 fn notify(title: &str, body: &str) {
@@ -327,10 +427,25 @@ fn execute(store: &Store, dir: &Path, stops: &Stops, closing: &AtomicBool, on_ch
     }
     on_change();
 
-    let workdir = dir.join("runs").join(d.id.to_string());
-    let outcome = match (find_claude(), store::create_private_dir(&workdir)) {
+    // 이을 땐 그 대화가 사는 폴더에서 — Claude Code 는 대화를 작업 폴더별로 둔다.
+    let workdir = dir.join("runs").join(d.folder.to_string());
+    let codex = d.target == "codex";
+    let session = d.session.as_deref();
+    let outcome = match (find_cli(&d.target), store::create_private_dir(&workdir)) {
         (Err(e), _) | (_, Err(e)) => Outcome { status: "failed", exit_code: None, response: None, stderr: Some(e), session_id: None },
-        (Ok(exe), Ok(())) => run_process(&exe, &claude_args(&d.allowed_tools), &d.prompt, &workdir, &flag, RUN_TIMEOUT),
+        _ if session.is_some_and(|s| !safe_session(s)) => Outcome {
+            status: "failed",
+            exit_code: None,
+            response: None,
+            stderr: Some("이을 대화 번호 모양이 이상해서 보내지 않았어요".into()),
+            session_id: None,
+        },
+        (Ok(exe), Ok(())) if codex => {
+            run_process(&exe, &codex_args(&d.allowed_tools, session), &d.prompt, &workdir, &flag, RUN_TIMEOUT, parse_codex_output)
+        }
+        (Ok(exe), Ok(())) => {
+            run_process(&exe, &claude_args(&d.allowed_tools, session), &d.prompt, &workdir, &flag, RUN_TIMEOUT, parse_output)
+        }
     };
     // 답을 못 적으면 몇 번 더 — 그래도 안 되면 «왔어요» 라고 하지 않는다(DB 에는 «도는 중» 이 남고 다음 켤 때 «끊김» 으로 닫힌다).
     let saved = (0..3).any(|i| {
@@ -439,12 +554,12 @@ mod tests {
 
     #[test]
     fn args_default_is_conversation_only() {
-        let a = claude_args("");
+        let a = claude_args("", None);
         let i = a.iter().position(|x| x == "--tools").unwrap();
         assert_eq!(a[i + 1], "", "도구 없음");
         assert!(a.contains(&"--strict-mcp-config".to_string()) && !a.contains(&"--allowedTools".to_string()));
         assert!(!a.iter().any(|x| x.contains("prompt")), "문장은 인자가 아니다");
-        let w = claude_args("WebSearch");
+        let w = claude_args("WebSearch", None);
         let j = w.iter().position(|x| x == "--allowedTools").unwrap();
         assert_eq!(w[j + 1], "WebSearch");
     }
@@ -478,7 +593,7 @@ mod tests {
         // 표준입력으로 받은 문장을 그대로 답에 넣어 돌려준다.
         let exe = script(d.path(), r#"IN=$(cat); printf '{"type":"result","is_error":false,"result":"got:%s","session_id":"abc"}' "$IN""#);
         let stop = AtomicBool::new(false);
-        let o = run_process(&exe, &[], "--위험한 시작", d.path(), &stop, Duration::from_secs(10));
+        let o = run_process(&exe, &[], "--위험한 시작", d.path(), &stop, Duration::from_secs(10), parse_output);
         assert_eq!((o.status, o.response.as_deref()), ("done", Some("got:--위험한 시작")));
     }
 
@@ -487,7 +602,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let exe = script(d.path(), "sleep 30 & wait");
         let t = Instant::now();
-        let o = run_process(&exe, &[], "x", d.path(), &AtomicBool::new(false), Duration::from_millis(400));
+        let o = run_process(&exe, &[], "x", d.path(), &AtomicBool::new(false), Duration::from_millis(400), parse_output);
         assert_eq!(o.status, "failed");
         assert!(o.stderr.unwrap().contains("멈췄어요") && t.elapsed() < Duration::from_secs(5));
 
@@ -498,7 +613,7 @@ mod tests {
             s2.store(true, Ordering::SeqCst);
         });
         let t = Instant::now();
-        let o = run_process(&exe, &[], "x", d.path(), &stop, Duration::from_secs(60));
+        let o = run_process(&exe, &[], "x", d.path(), &stop, Duration::from_secs(60), parse_output);
         assert_eq!(o.status, "stopped");
         assert!(t.elapsed() < Duration::from_secs(5));
     }
@@ -508,7 +623,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let exe = script(d.path(), r#"cat >/dev/null; sleep 30 & printf '{"result":"ok"}'"#);
         let t = Instant::now();
-        let o = run_process(&exe, &[], "x", d.path(), &AtomicBool::new(false), Duration::from_secs(60));
+        let o = run_process(&exe, &[], "x", d.path(), &AtomicBool::new(false), Duration::from_secs(60), parse_output);
         assert_eq!(o.response.as_deref(), Some("ok"));
         assert!(t.elapsed() < Duration::from_secs(8), "출력 파이프를 붙든 손주가 일꾼을 막지 않는다");
     }
@@ -516,7 +631,7 @@ mod tests {
     #[test]
     fn missing_executable_fails_with_a_reason() {
         let d = tempfile::tempdir().unwrap();
-        let o = run_process(&d.path().join("nope"), &[], "x", d.path(), &AtomicBool::new(false), Duration::from_secs(1));
+        let o = run_process(&d.path().join("nope"), &[], "x", d.path(), &AtomicBool::new(false), Duration::from_secs(1), parse_output);
         assert_eq!(o.status, "failed");
         assert!(o.stderr.unwrap().contains("못 띄웠어요"));
     }
@@ -529,7 +644,7 @@ mod tests {
         std::env::set_var("OURO_CLAUDE", &exe);
         let store = Arc::new(Store::open_in_memory());
         let e = store
-            .create_errand(&ErrandInput { prompt: "브리핑".into(), start_at: now_ms() - 1_000, allowed_tools: String::new(), late: "run".into() })
+            .create_errand(&ErrandInput { prompt: "브리핑".into(), start_at: now_ms() - 1_000, ..ErrandInput::default() })
             .unwrap();
         let changes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let c2 = changes.clone();
@@ -559,5 +674,67 @@ mod tests {
         assert!(d.run_now(8));
         assert_eq!(rx.try_iter().count(), 2);
         assert!(!d.stop(1), "도는 게 없으면 false");
+    }
+
+    #[test]
+    fn codex_args_are_conversation_only_and_resume_safely() {
+        let a = codex_args("", None);
+        assert_eq!((a[0].as_str(), a.last().unwrap().as_str()), ("exec", "-"), "문장은 표준입력");
+        assert!(a.contains(&"--ignore-user-config".to_string()) && a.contains(&"web_search=\"disabled\"".to_string()));
+        assert!(a.contains(&"features.shell_tool=false".to_string()) && !a.iter().any(|x| x.starts_with("--disable")));
+        let r = codex_args("WebSearch", Some("0199-abc"));
+        assert_eq!(&r[..2], ["exec", "resume"]);
+        assert_eq!(&r[r.len() - 2..], ["0199-abc", "-"]);
+        assert!(r.contains(&"web_search=\"live\"".to_string()));
+        let c = claude_args("", Some("s-1"));
+        let i = c.iter().position(|x| x == "--resume").unwrap();
+        assert_eq!(c[i + 1], "s-1");
+        assert!(safe_session("01a1009c-8fef-7571-b4b5-69080a78cd0d"));
+        assert!(!safe_session("--dangerously-bypass-approvals-and-sandbox") && !safe_session("a b") && !safe_session(""));
+    }
+
+    #[test]
+    fn parses_codex_jsonl() {
+        // 2026-10-03 실측 모양: 중간 말 + 웹 검색 + 마지막 말. 경고(item 의 error)는 실패가 아니다.
+        let ok = r#"{"type":"thread.started","thread_id":"t-1"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Codex is ignoring 1 unrecognized configuration setting."}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"검색하겠습니다."}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"흐리고 22°C"}}
+{"type":"turn.completed","usage":{}}"#;
+        let o = parse_codex_output(ok, "", Some(0));
+        assert_eq!((o.status, o.response.as_deref(), o.session_id.as_deref()), ("done", Some("흐리고 22°C"), Some("t-1")));
+        let bad = r#"{"type":"thread.started","thread_id":"t-2"}
+{"type":"error","message":"{\"type\":\"error\",\"status\":400,\"error\":{\"message\":\"model not supported\"}}"}
+{"type":"turn.failed","error":{"message":"{\"type\":\"error\",\"status\":400,\"error\":{\"message\":\"model not supported\"}}"}}"#;
+        let o = parse_codex_output(bad, "", Some(1));
+        assert_eq!((o.status, o.stderr.as_deref()), ("failed", Some("model not supported")));
+        assert_eq!(parse_codex_output("", "Not logged in", Some(1)).stderr.as_deref(), Some("Not logged in"));
+        assert_eq!(parse_codex_output("", "", Some(0)).status, "failed", "빈 답은 실패");
+    }
+
+    #[test]
+    fn codex_errand_runs_through_its_own_cli_end_to_end() {
+        use crate::errands::ErrandInput;
+        let d = tempfile::tempdir().unwrap();
+        // 받은 인자 첫 줄과 표준입력을 답에 넣는다 — Codex 갈래로 갔는지 본다.
+        let exe = script(
+            d.path(),
+            r#"IN=$(cat); printf '{"type":"thread.started","thread_id":"t9"}\n{"type":"item.completed","item":{"type":"agent_message","text":"%s:%s"}}\n' "$1" "$IN""#,
+        );
+        std::env::set_var("OURO_CODEX", &exe);
+        let store = Arc::new(Store::open_in_memory());
+        let e = store
+            .create_errand(&ErrandInput { prompt: "코덱스에게".into(), start_at: now_ms() - 1_000, target: "codex".into(), ..ErrandInput::default() })
+            .unwrap();
+        let disp = start(store.clone(), d.path().to_path_buf(), Arc::new(|| {}));
+        for _ in 0..100 {
+            if store.get_errand(e.id).unwrap().unwrap().run.is_some_and(|r| r.status == "done") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let r = store.get_errand(e.id).unwrap().unwrap().run.unwrap();
+        assert_eq!((r.status.as_str(), r.response.as_deref(), r.can_resume), ("done", Some("exec:코덱스에게"), true));
+        drop(disp);
     }
 }

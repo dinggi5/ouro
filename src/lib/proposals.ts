@@ -2,7 +2,7 @@
 // (`approve_proposal` 이 유일한 길, 소켓엔 이 문이 없다 — mcp.rs).
 
 import { invoke } from "@tauri-apps/api/core";
-import type { Errand, ErrandInput } from "./errands";
+import type { Errand, ErrandInput, Target } from "./errands";
 import type { EventInput, OuroEvent } from "./events";
 import { dayLabel } from "./quick";
 import { addDays, fmt, parseYmd, sameDay } from "./time";
@@ -31,8 +31,9 @@ export const proposalApi = {
 export type ErrandProposal = {
   id: number;
   client: string;
-  /** 보낼 원문 — 승인하면 이 글이 그대로 Claude Code 로 나간다(고쳐서 승인하면 고친 글). */
+  /** 보낼 원문 — 승인하면 이 글이 그대로 `target` 으로 나간다(고쳐서 승인하면 고친 글). */
   prompt: string;
+  target: Target;
   startAt: number;
   allowedTools: string;
   late: "run" | "skip";
@@ -75,7 +76,7 @@ export function clientLabel(c: string): string {
 
 /** 부탁 제안 시트용 입력 모양. */
 export function errandInputOf(p: ErrandProposal): ErrandInput {
-  return { prompt: p.prompt, startAt: p.startAt, allowedTools: p.allowedTools, late: p.late };
+  return { prompt: p.prompt, startAt: p.startAt, allowedTools: p.allowedTools, late: p.late, target: p.target, repeat: "", carry: false, resumeRunId: null };
 }
 
 /** «내일 · 오전 9:00» — 부탁은 시각 하나다. */

@@ -12,6 +12,14 @@
 //   · 돌았는지는 `runs` 가 정한다. 부탁에 실행이 하나라도 있으면 예약 시각이 와도 다시 안 돈다(건너뜀도 한 줄 남긴다).
 //     «다시 실행» 은 예약과 무관한 수동 실행이다(`dispatch::Dispatcher::run_now`).
 //   · 한 부탁의 «지금 상태» 는 가장 최근 실행이다. 고치기·지우기는 상태가 «대기» 일 때만(돈 기록을 바꾸지 않는다).
+//   · **대상**(개발 7): `claude`(Claude Code) · `codex`(Codex). 부탁 한 줄이 어디로 갈지만 다르고 규칙은 같다.
+//   · **반복**(개발 7): `items.rrule` 이 붙은 줄이 «다음 회차» 다. 그 회차가 처음 돌기 시작하는 순간(`claim_run`, 같은 트랜잭션)
+//     그다음 회차를 새 줄로 만들고 규칙을 넘긴다 — 회차마다 자기 답을 가진 채 캘린더에 남고, 미래 회차를 미리 깔지 않는다.
+//     맥이 사흘 잤으면 놓친 회차는 하나만(그 회차의 «놓치면» 대로) 처리하고 다음 회차는 «지금 이후» 로 잡는다 — 몰아서 세 번 돌지 않는다.
+//     반복을 멈추려면 «다음 회차» 를 지운다. 규칙은 고정된 몇 개(`REPEAT_CHOICES`)뿐 — 날짜 계산은 `next_occurrence` 가 결정적으로 한다.
+//   · **이어서**(개발 7): 같은 대화를 잇는다(`claude --resume` · `codex exec resume`). 두 길 — 답 시트의 «이어서 부탁»(`resume_run_id`),
+//     반복 부탁의 «지난 대화 이어서»(`carry`: 같은 묶음에서 가장 최근 답의 대화). **나가는 글은 여전히 사람이 쓴 `prompt` 하나**다 —
+//     앞 대화는 이미 그 AI 쪽에 있는 것이고, 앱이 답을 다시 문장에 붙이지 않는다. 이을 대화는 실행을 확보할 때 정한다(그 사이에 답이 오니까).
 
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -25,6 +33,11 @@ const RESPONSE_MAX: usize = 100_000;
 const STDERR_MAX: usize = 2_000;
 /// 부탁에 줄 수 있는 도구 — 빈 값 = 대화만. 더 늘릴 땐 이 목록에 한 줄(PLAN §9-2: 카드에서 명시한 것만).
 pub(crate) const TOOL_CHOICES: [&str; 2] = ["", "WebSearch"];
+/// 부탁을 받을 수 있는 쪽. 스키마 1 의 CHECK 와 같다.
+pub(crate) const TARGETS: [&str; 2] = ["claude", "codex"];
+/// 고를 수 있는 반복 — RFC 5545 RRULE 글자 그대로 저장한다(나중에 `.ics` 로 그대로 나간다). 빈 값 = 반복 안 함.
+/// 매월은 뺐다 — 31일에 건 «매월» 이 2월에 무엇이 되는지 사람마다 기대가 달라서, 고를 수 있게 하려면 그 질문부터 답해야 한다.
+pub(crate) const REPEAT_CHOICES: [&str; 4] = ["", "FREQ=DAILY", "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR", "FREQ=WEEKLY"];
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,10 +49,41 @@ pub(crate) struct ErrandInput {
     /// `run` = 놓쳐도 늦게 실행 / `skip` = 건너뜀
     #[serde(default = "default_late")]
     pub late: String,
+    /// `claude` · `codex`
+    #[serde(default = "default_target")]
+    pub target: String,
+    /// `REPEAT_CHOICES` 중 하나. 빈 값 = 한 번.
+    #[serde(default)]
+    pub repeat: String,
+    /// 반복할 때 지난 회차의 대화를 잇는다.
+    #[serde(default)]
+    pub carry: bool,
+    /// «이어서 부탁» — 이 실행의 대화를 잇는다. 만들 때만 정해지고 고칠 수 없다.
+    #[serde(default)]
+    pub resume_run_id: Option<i64>,
+}
+
+impl Default for ErrandInput {
+    fn default() -> Self {
+        Self {
+            prompt: String::new(),
+            start_at: 0,
+            allowed_tools: String::new(),
+            late: default_late(),
+            target: default_target(),
+            repeat: String::new(),
+            carry: false,
+            resume_run_id: None,
+        }
+    }
 }
 
 fn default_late() -> String {
     "run".into()
+}
+
+fn default_target() -> String {
+    "claude".into()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -57,6 +101,10 @@ pub(crate) struct RunView {
     pub response: Option<String>,
     pub stderr: Option<String>,
     pub read: bool,
+    /// 앞 대화를 이어서 보냈나.
+    pub resumed: bool,
+    /// 이 답에서 «이어서 부탁» 을 할 수 있나(대화 번호를 받았다).
+    pub can_resume: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -70,11 +118,19 @@ pub(crate) struct Errand {
     pub allowed_tools: String,
     pub late: String,
     pub approved: bool,
+    /// 이 줄이 «다음 회차» 면 그 규칙(`REPEAT_CHOICES`), 아니면 빈 값.
+    pub repeat: String,
+    /// 반복 묶음에 속한다(지난 회차 포함).
+    pub series: bool,
+    pub carry: bool,
+    pub resume_run_id: Option<i64>,
+    /// 잇는 대화의 원래 부탁 제목 — 시트가 «… 에 이어서» 로 보인다.
+    pub resume_title: Option<String>,
     /// 가장 최근 실행. 없으면 «대기».
     pub run: Option<RunView>,
 }
 
-/// 돌 차례가 된 부탁.
+/// 돌 차례가 된 부탁. `session`·`folder` 는 `claim_run` 이 정한다(목록에선 비어 있다).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Due {
     pub id: i64,
@@ -82,6 +138,11 @@ pub(crate) struct Due {
     pub allowed_tools: String,
     pub late: String,
     pub start_at: i64,
+    pub target: String,
+    /// 이을 대화 번호. None = 새 대화.
+    pub session: Option<String>,
+    /// 작업 폴더 `runs/<folder>`.
+    pub folder: i64,
 }
 
 /// 실행 권리를 어떤 길로 얻나. 수동은 «요청한 뒤 다른 실행이 시작하지 않았을 때만».
@@ -125,7 +186,75 @@ fn validate(input: &ErrandInput) -> Result<(String, String), String> {
     if !matches!(input.late.as_str(), "run" | "skip") {
         return Err("놓쳤을 때 할 일이 이상해요".into());
     }
+    if !TARGETS.contains(&input.target.as_str()) {
+        return Err("부탁 받을 쪽이 이상해요".into());
+    }
+    if !REPEAT_CHOICES.contains(&input.repeat.as_str()) {
+        return Err("반복이 이상해요".into());
+    }
+    if input.carry && input.repeat.is_empty() {
+        return Err("«지난 대화 이어서» 는 반복하는 부탁에만 돼요".into());
+    }
+    if input.resume_run_id.is_some() && !input.repeat.is_empty() {
+        return Err("이어서 하는 부탁은 반복할 수 없어요 — 반복은 새 부탁으로 걸어 주세요".into());
+    }
     Ok((prompt.to_string(), title_of(prompt)))
+}
+
+/// «이어서 부탁» 이 잇는 실행을 확인한다 — 답이 왔고 대화 번호가 있어야 하고, 같은 쪽(Claude·Codex)이어야 한다.
+/// 돌려주는 값 = 그 대화가 사는 작업 폴더(부모 부탁의 폴더).
+/// (실행 상태, 대화 번호, 받은 쪽, 부탁 id, 작업 폴더)
+type ParentRun = (String, Option<String>, String, i64, Option<i64>);
+
+fn resume_folder(conn: &rusqlite::Connection, run_id: i64, target: &str) -> Result<i64, String> {
+    let row: Option<ParentRun> = conn
+        .query_row(
+            "SELECT r.status, r.session_id, e.target, e.item_id, e.folder_id
+             FROM runs r JOIN errands e ON e.item_id = r.item_id WHERE r.id = ?1",
+            [run_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let (status, session, parent_target, item, folder) = row.ok_or("이을 답이 없어요")?;
+    if status != "done" || session.is_none() {
+        return Err("답이 온 부탁만 이어서 부탁할 수 있어요".into());
+    }
+    if parent_target != target {
+        return Err("이어서 하는 부탁은 같은 쪽(Claude Code·Codex)에게만 보낼 수 있어요".into());
+    }
+    Ok(folder.unwrap_or(item))
+}
+
+/// 반복 규칙의 다음 회차 (순수 — 테스트 가능): `start_at` 의 **로컬 벽시계 시각**을 지키며 `start_at` 과 `after` 둘 다보다 뒤인 첫 회차.
+/// 서머타임으로 그 시각이 두 번이면 앞의 것, 없으면(건너뛴 한 시간) 한 시간 뒤. 400일 안에 없으면 None.
+pub(crate) fn next_occurrence(rule: &str, start_at: i64, after: i64) -> Option<i64> {
+    use chrono::{Datelike, Duration as CDuration, Local, TimeZone, Weekday};
+    let start = Local.timestamp_millis_opt(start_at).earliest()?;
+    let time = start.time();
+    let after_day = Local.timestamp_millis_opt(after).earliest()?.date_naive();
+    let mut day = start.date_naive().succ_opt()?.max(after_day);
+    for _ in 0..400 {
+        let hit = match rule {
+            "FREQ=DAILY" => true,
+            "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR" => !matches!(day.weekday(), Weekday::Sat | Weekday::Sun),
+            "FREQ=WEEKLY" => day.weekday() == start.weekday(),
+            _ => return None,
+        };
+        if hit {
+            let wall = day.and_time(time);
+            let at = Local
+                .from_local_datetime(&wall)
+                .earliest()
+                .or_else(|| Local.from_local_datetime(&(wall + CDuration::hours(1))).earliest())?
+                .timestamp_millis();
+            if at > after && at > start_at {
+                return Some(at);
+            }
+        }
+        day = day.succ_opt()?;
+    }
+    None
 }
 
 /// 꼬리 글자 `n` 개만.
@@ -140,7 +269,10 @@ fn tail(s: &str, n: usize) -> String {
 
 const LIST_SQL: &str = "
     SELECT i.id, i.title, i.start_at, e.target, e.prompt, e.allowed_tools, e.late, e.approved_at,
-           r.id, r.status, r.started_at, r.finished_at, r.late_ms, r.sent_text, r.response, r.stderr, r.read_at
+           r.id, r.status, r.started_at, r.finished_at, r.late_ms, r.sent_text, r.response, r.stderr, r.read_at,
+           r.resumed_session, r.session_id,
+           COALESCE(i.rrule, ''), e.series_id, e.carry, e.resume_run_id,
+           (SELECT pi.title FROM runs pr JOIN items pi ON pi.id = pr.item_id WHERE pr.id = e.resume_run_id)
     FROM items i
     JOIN errands e ON e.item_id = i.id
     LEFT JOIN runs r ON r.id = (SELECT MAX(id) FROM runs WHERE item_id = i.id)
@@ -149,17 +281,22 @@ const LIST_SQL: &str = "
 fn row_to_errand(r: &rusqlite::Row) -> rusqlite::Result<Errand> {
     let run = match r.get::<_, Option<i64>>(8)? {
         None => None,
-        Some(id) => Some(RunView {
-            id,
-            status: r.get(9)?,
-            started_at: r.get(10)?,
-            finished_at: r.get(11)?,
-            late_ms: r.get(12)?,
-            sent_text: r.get(13)?,
-            response: r.get(14)?,
-            stderr: r.get(15)?,
-            read: r.get::<_, Option<i64>>(16)?.is_some(),
-        }),
+        Some(id) => {
+            let status: String = r.get(9)?;
+            Some(RunView {
+                id,
+                can_resume: status == "done" && r.get::<_, Option<String>>(18)?.is_some(),
+                status,
+                started_at: r.get(10)?,
+                finished_at: r.get(11)?,
+                late_ms: r.get(12)?,
+                sent_text: r.get(13)?,
+                response: r.get(14)?,
+                stderr: r.get(15)?,
+                read: r.get::<_, Option<i64>>(16)?.is_some(),
+                resumed: r.get::<_, Option<String>>(17)?.is_some(),
+            })
+        }
     };
     Ok(Errand {
         id: r.get(0)?,
@@ -170,7 +307,77 @@ fn row_to_errand(r: &rusqlite::Row) -> rusqlite::Result<Errand> {
         allowed_tools: r.get(5)?,
         late: r.get(6)?,
         approved: r.get::<_, Option<i64>>(7)?.is_some(),
+        repeat: r.get(19)?,
+        series: r.get::<_, Option<i64>>(20)?.is_some(),
+        carry: r.get(21)?,
+        resume_run_id: r.get(22)?,
+        resume_title: r.get(23)?,
         run,
+    })
+}
+
+/// 부탁 한 줄 넣기 — `create_errand`·`approve_errand_proposal`·다음 회차(`claim_run`)가 같이 쓴다. 트랜잭션 안에서 부른다.
+struct NewErrand<'a> {
+    title: &'a str,
+    prompt: &'a str,
+    start_at: i64,
+    target: &'a str,
+    allowed_tools: &'a str,
+    late: &'a str,
+    origin: &'a str,
+    approved_at: i64,
+    rrule: Option<&'a str>,
+    series_id: Option<i64>,
+    carry: bool,
+    resume_run_id: Option<i64>,
+    folder_id: Option<i64>,
+    parent_run_id: Option<i64>,
+    depth: i64,
+}
+
+fn insert_errand(tx: &rusqlite::Connection, n: &NewErrand, now: i64) -> rusqlite::Result<i64> {
+    tx.execute(
+        "INSERT INTO items (kind, title, all_day, start_at, end_at, tz, rrule, origin, created_at, updated_at)
+         VALUES ('errand', ?1, 0, ?2, ?2, ?3, ?4, ?5, ?6, ?6)",
+        params![n.title, n.start_at, local_tz(), n.rrule, n.origin, now],
+    )?;
+    let id = tx.last_insert_rowid();
+    // 반복이면 첫 줄이 곧 묶음 번호다.
+    let series = n.series_id.or(n.rrule.map(|_| id));
+    tx.execute(
+        "INSERT INTO errands (item_id, target, prompt, allowed_tools, late, approved_at, parent_run_id, depth,
+                              series_id, carry, resume_run_id, folder_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            id,
+            n.target,
+            n.prompt,
+            n.allowed_tools,
+            n.late,
+            n.approved_at,
+            n.parent_run_id,
+            n.depth,
+            series,
+            n.carry,
+            n.resume_run_id,
+            n.folder_id
+        ],
+    )?;
+    Ok(id)
+}
+
+const DUE_COLS: &str = "i.id, e.prompt, e.allowed_tools, e.late, i.start_at, e.target, COALESCE(e.folder_id, i.id)";
+
+fn row_to_due(r: &rusqlite::Row) -> rusqlite::Result<Due> {
+    Ok(Due {
+        id: r.get(0)?,
+        prompt: r.get(1)?,
+        allowed_tools: r.get(2)?,
+        late: r.get(3)?,
+        start_at: r.get(4)?,
+        target: r.get(5)?,
+        session: None,
+        folder: r.get(6)?,
     })
 }
 
@@ -182,19 +389,25 @@ impl Store {
         let id = {
             let mut conn = self.conn();
             let tx = conn.transaction().map_err(|e| e.to_string())?;
-            tx.execute(
-                "INSERT INTO items (kind, title, all_day, start_at, end_at, tz, origin, created_at, updated_at)
-                 VALUES ('errand', ?1, 0, ?2, ?2, ?3, 'user', ?4, ?4)",
-                params![title, input.start_at, local_tz(), now],
-            )
-            .map_err(|e| e.to_string())?;
-            let id = tx.last_insert_rowid();
-            tx.execute(
-                "INSERT INTO errands (item_id, target, prompt, allowed_tools, late, approved_at)
-                 VALUES (?1, 'claude', ?2, ?3, ?4, ?5)",
-                params![id, prompt, input.allowed_tools, input.late, now],
-            )
-            .map_err(|e| e.to_string())?;
+            let folder_id = input.resume_run_id.map(|r| resume_folder(&tx, r, &input.target)).transpose()?;
+            let n = NewErrand {
+                title: &title,
+                prompt: &prompt,
+                start_at: input.start_at,
+                target: &input.target,
+                allowed_tools: &input.allowed_tools,
+                late: &input.late,
+                origin: "user",
+                approved_at: now,
+                rrule: Some(input.repeat.as_str()).filter(|r| !r.is_empty()),
+                series_id: None,
+                carry: input.carry,
+                resume_run_id: input.resume_run_id,
+                folder_id,
+                parent_run_id: None,
+                depth: 0,
+            };
+            let id = insert_errand(&tx, &n, now).map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
             id
         };
@@ -222,8 +435,8 @@ impl Store {
     }
 
     /// 아직 한 번도 안 돈 부탁만 고친다 — 돈 기록(보낸 원문)이 «지금 문장» 과 어긋나지 않게.
+    /// «이어서» 는 만들 때 정해진 대로 둔다(입력의 `resume_run_id` 는 안 본다) — 잇는 대화가 있으면 받는 쪽을 못 바꾼다.
     pub(crate) fn update_errand(&self, id: i64, input: &ErrandInput) -> Result<Errand, String> {
-        let (prompt, title) = validate(input)?;
         {
             let mut conn = self.conn();
             let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -233,19 +446,33 @@ impl Store {
             if has_run {
                 return Err("이미 돈 부탁은 고칠 수 없어요 — 새로 만들어 주세요".into());
             }
+            let resume: Option<Option<i64>> = tx
+                .query_row("SELECT resume_run_id FROM errands WHERE item_id = ?1", [id], |r| r.get(0))
+                .optional()
+                .map_err(|e| e.to_string())?;
+            let resume = resume.ok_or("이미 지워진 부탁이에요")?;
+            let input = ErrandInput { resume_run_id: resume, ..input.clone() };
+            let (prompt, title) = validate(&input)?;
+            if let Some(r) = resume {
+                resume_folder(&tx, r, &input.target)?;
+            }
+            let rrule = Some(input.repeat.as_str()).filter(|r| !r.is_empty());
             let n = tx
                 .execute(
-                    "UPDATE items SET title = ?2, start_at = ?3, end_at = ?3, updated_at = ?4
+                    "UPDATE items SET title = ?2, start_at = ?3, end_at = ?3, rrule = ?4, updated_at = ?5
                      WHERE id = ?1 AND kind = 'errand' AND deleted_at IS NULL",
-                    params![id, title, input.start_at, now_ms()],
+                    params![id, title, input.start_at, rrule, now_ms()],
                 )
                 .map_err(|e| e.to_string())?;
             if n == 0 {
                 return Err("이미 지워진 부탁이에요".into());
             }
+            // 반복을 새로 걸면 이 줄이 묶음의 첫 줄이 된다(이미 묶음이면 그대로).
             tx.execute(
-                "UPDATE errands SET prompt = ?2, allowed_tools = ?3, late = ?4 WHERE item_id = ?1",
-                params![id, prompt, input.allowed_tools, input.late],
+                "UPDATE errands SET prompt = ?2, allowed_tools = ?3, late = ?4, target = ?5, carry = ?6,
+                        series_id = CASE WHEN ?7 THEN COALESCE(series_id, item_id) ELSE series_id END
+                 WHERE item_id = ?1",
+                params![id, prompt, input.allowed_tools, input.late, input.target, input.carry, rrule.is_some()],
             )
             .map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
@@ -292,19 +519,17 @@ impl Store {
     pub(crate) fn due_errands(&self, now: i64) -> Result<Vec<Due>, String> {
         let conn = self.conn();
         let mut stmt = conn
-            .prepare_cached(
-                "SELECT i.id, e.prompt, e.allowed_tools, e.late, i.start_at
+            .prepare_cached(&format!(
+                "SELECT {DUE_COLS}
                  FROM items i JOIN errands e ON e.item_id = i.id
                  WHERE i.kind = 'errand' AND i.deleted_at IS NULL AND e.approved_at IS NOT NULL
                    AND i.start_at <= ?1
                    AND NOT EXISTS (SELECT 1 FROM runs WHERE item_id = i.id)
-                 ORDER BY i.start_at, i.id",
-            )
+                 ORDER BY i.start_at, i.id"
+            ))
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([now], |r| {
-                Ok(Due { id: r.get(0)?, prompt: r.get(1)?, allowed_tools: r.get(2)?, late: r.get(3)?, start_at: r.get(4)? })
-            })
+            .query_map([now], row_to_due)
             .and_then(|it| it.collect::<rusqlite::Result<Vec<_>>>())
             .map_err(|e| e.to_string())?;
         Ok(rows)
@@ -327,6 +552,9 @@ impl Store {
     /// 예약 실행인데 이미 돌았으면(또는 수동 요청 뒤에 다른 실행이 시작했으면) `None` — 그 값으로 실행 기록을 연다.
     /// 대기하는 동안 사람이 고치거나 지운 부탁이 옛 문장으로 나가지 않게 하는 문이다. `sent_text` = 지금 문장 그대로.
     /// `skip` 이 이유를 돌려주면 돌리지 않고 «건너뜀» 으로 바로 닫는다. 돌려주는 bool = 건너뜀 여부.
+    ///
+    /// 개발 7: 이을 대화(`Due::session`)도 여기서 정한다 — 반복의 «지난 대화» 는 바로 앞 회차의 답이 와야 생긴다.
+    /// 그리고 **반복의 다음 회차가 처음 돌기 시작하면**(예약·수동·건너뜀 모두) 같은 트랜잭션에서 그다음 회차를 만들고 규칙을 넘긴다.
     pub(crate) fn claim_run(
         &self,
         id: i64,
@@ -338,15 +566,31 @@ impl Store {
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         let due = tx
             .query_row(
-                "SELECT i.id, e.prompt, e.allowed_tools, e.late, i.start_at
-                 FROM items i JOIN errands e ON e.item_id = i.id
-                 WHERE i.id = ?1 AND i.kind = 'errand' AND i.deleted_at IS NULL AND e.approved_at IS NOT NULL",
+                &format!(
+                    "SELECT {DUE_COLS}, i.title, i.rrule, e.series_id, e.carry, e.resume_run_id, e.approved_at,
+                            e.parent_run_id, e.depth, i.origin
+                     FROM items i JOIN errands e ON e.item_id = i.id
+                     WHERE i.id = ?1 AND i.kind = 'errand' AND i.deleted_at IS NULL AND e.approved_at IS NOT NULL"
+                ),
                 [id],
-                |r| Ok(Due { id: r.get(0)?, prompt: r.get(1)?, allowed_tools: r.get(2)?, late: r.get(3)?, start_at: r.get(4)? }),
+                |r| {
+                    Ok((
+                        row_to_due(r)?,
+                        r.get::<_, String>(7)?,
+                        r.get::<_, Option<String>>(8)?,
+                        r.get::<_, Option<i64>>(9)?,
+                        r.get::<_, bool>(10)?,
+                        r.get::<_, Option<i64>>(11)?,
+                        r.get::<_, i64>(12)?,
+                        (r.get::<_, Option<i64>>(13)?, r.get::<_, i64>(14)?, r.get::<_, String>(15)?),
+                    ))
+                },
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        let Some(due) = due else { return Ok(None) };
+        let Some((mut due, title, rrule, series, carry, resume_run, approved_at, (parent_run, depth, origin))) = due else {
+            return Ok(None);
+        };
         let (running, any_since, any): (bool, bool, bool) = tx
             .query_row(
                 "SELECT EXISTS (SELECT 1 FROM runs WHERE item_id = ?1 AND status = 'running'),
@@ -371,9 +615,31 @@ impl Store {
             }
         };
         let reason = if matches!(claim, Claim::Scheduled) { skip(&due, late_ms) } else { None };
+        // 이을 대화: «이어서 부탁» 이면 그 실행의 대화, 반복의 «지난 대화 이어서» 면 같은 묶음·같은 쪽에서 가장 최근 답의 대화.
+        due.session = match (resume_run, carry, series) {
+            (Some(r), _, _) => tx
+                .query_row("SELECT session_id FROM runs WHERE id = ?1", [r], |r| r.get::<_, Option<String>>(0))
+                .optional()
+                .map_err(|e| e.to_string())?
+                .flatten(),
+            (None, true, Some(sid)) => tx
+                .query_row(
+                    "SELECT r.session_id FROM runs r JOIN errands e ON e.item_id = r.item_id
+                     WHERE e.series_id = ?1 AND e.target = ?2 AND r.status = 'done' AND r.session_id IS NOT NULL
+                     ORDER BY r.id DESC LIMIT 1",
+                    params![sid, due.target],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?,
+            _ => None,
+        };
+        if reason.is_some() {
+            due.session = None;
+        }
         tx.execute(
-            "INSERT INTO runs (item_id, started_at, finished_at, sent_text, status, late_ms, stderr)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO runs (item_id, started_at, finished_at, sent_text, status, late_ms, stderr, resumed_session)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 id,
                 now,
@@ -381,11 +647,39 @@ impl Store {
                 due.prompt,
                 if reason.is_some() { "skipped" } else { "running" },
                 late_ms,
-                reason
+                reason,
+                due.session
             ],
         )
         .map_err(|e| e.to_string())?;
         let run_id = tx.last_insert_rowid();
+        // 반복: 이 회차가 처음 도는 순간 다음 회차를 만든다. «지금 이후» 로 잡아 놓친 회차를 몰아 돌리지 않는다.
+        if let (Some(rule), false) = (rrule.as_deref(), any) {
+            match next_occurrence(rule, due.start_at, now.max(due.start_at)) {
+                Some(at) => {
+                    let n = NewErrand {
+                        title: &title,
+                        prompt: &due.prompt,
+                        start_at: at,
+                        target: &due.target,
+                        allowed_tools: &due.allowed_tools,
+                        late: &due.late,
+                        origin: &origin,
+                        approved_at,
+                        rrule: Some(rule),
+                        series_id: series.or(Some(id)),
+                        carry,
+                        resume_run_id: None,
+                        folder_id: Some(series.unwrap_or(id)),
+                        parent_run_id: parent_run,
+                        depth,
+                    };
+                    insert_errand(&tx, &n, now).map_err(|e| e.to_string())?;
+                    tx.execute("UPDATE items SET rrule = NULL WHERE id = ?1", [id]).map_err(|e| e.to_string())?;
+                }
+                None => eprintln!("ouro: 반복의 다음 회차를 못 찾았어요 — {rule}"),
+            }
+        }
         tx.commit().map_err(|e| e.to_string())?;
         Ok(Some((run_id, due, reason.is_some())))
     }
@@ -456,15 +750,9 @@ impl Store {
             .map_err(|e| e.to_string())
     }
 
-    /// 수동 실행용 — 이 부탁을 돌릴 때 필요한 것(승인된 것만).
-    pub(crate) fn errand_for_run(&self, id: i64) -> Result<Option<Due>, String> {
-        Ok(self.get_errand(id)?.filter(|e| e.approved).map(|e| Due {
-            id: e.id,
-            prompt: e.prompt,
-            allowed_tools: e.allowed_tools,
-            late: e.late,
-            start_at: e.start_at,
-        }))
+    /// 수동 실행 전 확인 — 있고 승인된 부탁인가.
+    pub(crate) fn errand_runnable(&self, id: i64) -> Result<bool, String> {
+        Ok(self.get_errand(id)?.is_some_and(|e| e.approved))
     }
 }
 
@@ -495,6 +783,7 @@ pub(crate) struct ErrandProposal {
     pub start_at: i64,
     pub allowed_tools: String,
     pub late: String,
+    pub target: String,
     pub depth: i64,
     pub parent_run_id: Option<i64>,
     /// pending · approved · rejected · expired
@@ -504,7 +793,8 @@ pub(crate) struct ErrandProposal {
     pub errand_id: Option<i64>,
 }
 
-const EP_COLS: &str = "id, client, prompt, start_at, allowed_tools, late, depth, parent_run_id, status, created_at, decided_at, errand_id";
+const EP_COLS: &str =
+    "id, client, prompt, start_at, allowed_tools, late, depth, parent_run_id, status, created_at, decided_at, errand_id, target";
 
 fn row_to_ep(r: &rusqlite::Row) -> rusqlite::Result<ErrandProposal> {
     Ok(ErrandProposal {
@@ -520,6 +810,7 @@ fn row_to_ep(r: &rusqlite::Row) -> rusqlite::Result<ErrandProposal> {
         created_at: r.get(9)?,
         decided_at: r.get(10)?,
         errand_id: r.get(11)?,
+        target: r.get(12)?,
     })
 }
 
@@ -535,6 +826,10 @@ impl Store {
     /// 검사는 부탁과 같은 `validate`. 깊이가 한도를 넘으면 거절(사람이 직접 부탁으로 만들면 된다).
     pub(crate) fn add_errand_proposal(&self, client: &str, input: &ErrandProposalInput) -> Result<ErrandProposal, String> {
         let (prompt, _) = validate(&input.errand)?;
+        // AI 는 한 번짜리 부탁만 낸다 — 반복·이어서는 사람이 정한다(고리가 스스로 굴러가지 않게, PLAN §9-4).
+        if !input.errand.repeat.is_empty() || input.errand.carry || input.errand.resume_run_id.is_some() {
+            return Err("AI 제안은 한 번짜리 부탁만 돼요".into());
+        }
         let now = now_ms();
         if input.errand.start_at < now - PAST_MS {
             return Err("시각이 이미 지났어요 — 지금 이후의 때로 제안해 주세요".into());
@@ -573,9 +868,19 @@ impl Store {
                 }
             };
             conn.execute(
-                "INSERT INTO errand_proposals (client, prompt, start_at, allowed_tools, late, parent_run_id, depth, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![client, prompt, input.errand.start_at, input.errand.allowed_tools, input.errand.late, input.from_run_id, depth, now],
+                "INSERT INTO errand_proposals (client, prompt, start_at, allowed_tools, late, parent_run_id, depth, created_at, target)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    client,
+                    prompt,
+                    input.errand.start_at,
+                    input.errand.allowed_tools,
+                    input.errand.late,
+                    input.from_run_id,
+                    depth,
+                    now,
+                    input.errand.target
+                ],
             )
             .map_err(|e| e.to_string())?;
             conn.last_insert_rowid()
@@ -628,23 +933,36 @@ impl Store {
                     if p.start_at < now - PAST_MS {
                         return Err("제안한 때가 이미 지났어요 — «고치기» 로 새 때를 정해 주세요".into());
                     }
-                    ErrandInput { prompt: p.prompt.clone(), start_at: p.start_at, allowed_tools: p.allowed_tools.clone(), late: p.late.clone() }
+                    ErrandInput {
+                        prompt: p.prompt.clone(),
+                        start_at: p.start_at,
+                        allowed_tools: p.allowed_tools.clone(),
+                        late: p.late.clone(),
+                        target: p.target.clone(),
+                        ..ErrandInput::default()
+                    }
                 }
             };
             let (prompt, title) = validate(&input)?;
-            tx.execute(
-                "INSERT INTO items (kind, title, all_day, start_at, end_at, tz, origin, created_at, updated_at)
-                 VALUES ('errand', ?1, 0, ?2, ?2, ?3, 'mcp', ?4, ?4)",
-                params![title, input.start_at, local_tz(), now],
-            )
-            .map_err(|e| e.to_string())?;
-            let errand_id = tx.last_insert_rowid();
-            tx.execute(
-                "INSERT INTO errands (item_id, target, prompt, allowed_tools, late, approved_at, parent_run_id, depth)
-                 VALUES (?1, 'claude', ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![errand_id, prompt, input.allowed_tools, input.late, now, p.parent_run_id, p.depth],
-            )
-            .map_err(|e| e.to_string())?;
+            let folder_id = input.resume_run_id.map(|r| resume_folder(&tx, r, &input.target)).transpose()?;
+            let n = NewErrand {
+                title: &title,
+                prompt: &prompt,
+                start_at: input.start_at,
+                target: &input.target,
+                allowed_tools: &input.allowed_tools,
+                late: &input.late,
+                origin: "mcp",
+                approved_at: now,
+                rrule: Some(input.repeat.as_str()).filter(|r| !r.is_empty()),
+                series_id: None,
+                carry: input.carry,
+                resume_run_id: input.resume_run_id,
+                folder_id,
+                parent_run_id: p.parent_run_id,
+                depth: p.depth,
+            };
+            let errand_id = insert_errand(&tx, &n, now).map_err(|e| e.to_string())?;
             tx.execute(
                 "UPDATE errand_proposals SET status = 'approved', decided_at = ?2, errand_id = ?3 WHERE id = ?1",
                 params![id, now, errand_id],
@@ -681,7 +999,7 @@ mod tests {
     use super::*;
 
     fn input(prompt: &str, at: i64) -> ErrandInput {
-        ErrandInput { prompt: prompt.into(), start_at: at, allowed_tools: String::new(), late: "run".into() }
+        ErrandInput { prompt: prompt.into(), start_at: at, ..ErrandInput::default() }
     }
 
     #[test]
@@ -924,5 +1242,133 @@ mod tests {
         }
         let s = Store::open(dir.path()).unwrap();
         s.add_errand_proposal("x", &prop("a", soon(), None)).unwrap();
+    }
+
+    // ── 개발 7: 반복·이어서·대상 ──
+
+    fn local(y: i32, m: u32, d: u32, h: u32, min: u32) -> i64 {
+        use chrono::TimeZone;
+        chrono::Local.with_ymd_and_hms(y, m, d, h, min, 0).earliest().unwrap().timestamp_millis()
+    }
+
+    fn done(s: &Store, run: i64, session: &str) {
+        let o = Outcome { status: "done", exit_code: Some(0), response: Some("답".into()), stderr: None, session_id: Some(session.into()) };
+        s.finish_run(run, &o).unwrap();
+    }
+
+    #[test]
+    fn next_occurrence_keeps_wall_clock_and_rule() {
+        let mon9 = local(2026, 10, 5, 9, 0); // 월요일
+        assert_eq!(next_occurrence("FREQ=DAILY", mon9, mon9), Some(local(2026, 10, 6, 9, 0)));
+        assert_eq!(next_occurrence("FREQ=WEEKLY", mon9, mon9), Some(local(2026, 10, 12, 9, 0)));
+        let fri9 = local(2026, 10, 9, 9, 0);
+        assert_eq!(next_occurrence("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR", fri9, fri9), Some(local(2026, 10, 12, 9, 0)), "금 → 월");
+        // 사흘 놓쳤으면 «지금 이후» 첫 회차 하나 — 몰아 돌리지 않는다.
+        assert_eq!(next_occurrence("FREQ=DAILY", mon9, local(2026, 10, 8, 10, 0)), Some(local(2026, 10, 9, 9, 0)));
+        assert_eq!(next_occurrence("FREQ=DAILY", mon9, local(2026, 10, 8, 8, 0)), Some(local(2026, 10, 8, 9, 0)));
+        assert_eq!(next_occurrence("FREQ=MONTHLY", mon9, mon9), None, "모르는 규칙은 없다");
+    }
+
+    #[test]
+    fn repeat_validation() {
+        let s = Store::open_in_memory();
+        let mut i = input("브리핑", now_ms() + 60_000);
+        i.repeat = "FREQ=YEARLY".into();
+        assert!(s.create_errand(&i).is_err());
+        i.repeat = String::new();
+        i.carry = true;
+        assert!(s.create_errand(&i).is_err(), "반복 없이 «지난 대화» 는 없다");
+        i.carry = false;
+        i.target = "gemini".into();
+        assert!(s.create_errand(&i).is_err());
+    }
+
+    #[test]
+    fn recurring_errand_spawns_next_on_first_claim_only() {
+        let s = Store::open_in_memory();
+        let at = now_ms() - 3 * 24 * 60 * 60 * 1000; // 사흘 전 회차가 아직 안 돌았다(맥이 잤다)
+        let mut i = input("아침 브리핑", at);
+        i.repeat = "FREQ=DAILY".into();
+        i.carry = true;
+        let head = s.create_errand(&i).unwrap();
+        assert_eq!((head.repeat.as_str(), head.series), ("FREQ=DAILY", true));
+        let (_, _, skipped) = s.claim_run(head.id, Claim::Scheduled, |_, _| Some("놓침")).unwrap().unwrap();
+        assert!(skipped);
+        let all = s.list_errands(0, i64::MAX).unwrap();
+        assert_eq!(all.len(), 2, "놓친 회차 하나 + 다음 회차 하나");
+        let next = all.iter().find(|e| e.id != head.id).unwrap();
+        assert!(next.start_at > now_ms() && next.repeat == "FREQ=DAILY" && next.approved && next.carry);
+        assert_eq!(s.get_errand(head.id).unwrap().unwrap().repeat, "", "규칙은 다음 회차로 넘어갔다");
+        // 같은 회차를 다시 돌려도(수동) 또 만들지 않는다.
+        s.claim_run(head.id, Claim::Manual { since: 0 }, |_, _| None).unwrap().unwrap();
+        assert_eq!(s.list_errands(0, i64::MAX).unwrap().len(), 2);
+        // 다음 회차를 지우면 반복이 멈춘다 — 돌 게 없다.
+        s.delete_errand(next.id).unwrap();
+        assert!(s.next_errand_at(0).unwrap().is_none());
+    }
+
+    #[test]
+    fn carry_resumes_latest_answer_of_the_series_in_one_folder() {
+        let s = Store::open_in_memory();
+        let mut i = input("오늘 할 일 정리", now_ms() - 1_000);
+        i.repeat = "FREQ=DAILY".into();
+        i.carry = true;
+        let head = s.create_errand(&i).unwrap();
+        let (run, d, _) = s.claim_run(head.id, Claim::Scheduled, |_, _| None).unwrap().unwrap();
+        assert_eq!((d.session, d.folder), (None, head.id), "첫 회차는 새 대화");
+        done(&s, run, "sess-1");
+        let next = s.list_errands(0, i64::MAX).unwrap().into_iter().find(|e| e.id != head.id).unwrap();
+        // 다음 회차를 지금으로 당겨 돌린다.
+        s.conn().execute("UPDATE items SET start_at = ?1 WHERE id = ?2", params![now_ms() - 1, next.id]).unwrap();
+        let (run2, d2, _) = s.claim_run(next.id, Claim::Scheduled, |_, _| None).unwrap().unwrap();
+        assert_eq!((d2.session.as_deref(), d2.folder), (Some("sess-1"), head.id), "같은 폴더에서 지난 대화를 잇는다");
+        assert!(s.get_errand(next.id).unwrap().unwrap().run.unwrap().resumed);
+        let _ = run2;
+        // carry 가 꺼진 반복은 새 대화.
+        let mut j = input("새로", now_ms() - 1_000);
+        j.repeat = "FREQ=DAILY".into();
+        let h2 = s.create_errand(&j).unwrap();
+        assert_eq!(s.claim_run(h2.id, Claim::Scheduled, |_, _| None).unwrap().unwrap().1.session, None);
+    }
+
+    #[test]
+    fn resume_needs_an_answer_of_the_same_target() {
+        let s = Store::open_in_memory();
+        let p = s.create_errand(&input("어제 커밋 정리", now_ms() - 1_000)).unwrap();
+        let mut follow = input("그중 제일 큰 것만 다시", now_ms() + 60_000);
+        let (run, _, _) = s.claim_run(p.id, Claim::Scheduled, |_, _| None).unwrap().unwrap();
+        follow.resume_run_id = Some(run);
+        assert!(s.create_errand(&follow).is_err(), "답이 오기 전엔 못 잇는다");
+        done(&s, run, "abc-123");
+        assert!(s.get_errand(p.id).unwrap().unwrap().run.unwrap().can_resume);
+        follow.target = "codex".into();
+        assert!(s.create_errand(&follow).is_err(), "Claude 대화를 Codex 로 이을 수 없다");
+        follow.target = "claude".into();
+        follow.repeat = "FREQ=DAILY".into();
+        assert!(s.create_errand(&follow).is_err(), "이어서 + 반복은 안 된다");
+        follow.repeat = String::new();
+        let f = s.create_errand(&follow).unwrap();
+        assert_eq!(f.resume_title.as_deref(), Some("어제 커밋 정리"));
+        // 고치기로 받는 쪽을 바꿀 수 없다(이어서는 만들 때 정해진 대로).
+        let mut edit = follow.clone();
+        edit.target = "codex".into();
+        edit.resume_run_id = None;
+        assert!(s.update_errand(f.id, &edit).is_err());
+        s.conn().execute("UPDATE items SET start_at = ?1 WHERE id = ?2", params![now_ms() - 1, f.id]).unwrap();
+        let (_, d, _) = s.claim_run(f.id, Claim::Scheduled, |_, _| None).unwrap().unwrap();
+        assert_eq!((d.session.as_deref(), d.folder, d.prompt.as_str()), (Some("abc-123"), p.id, "그중 제일 큰 것만 다시"));
+    }
+
+    #[test]
+    fn ai_proposals_are_one_shot_but_may_target_codex() {
+        let s = Store::open_in_memory();
+        let mut e = input("요약", now_ms() + 60_000);
+        e.repeat = "FREQ=DAILY".into();
+        assert!(s.add_errand_proposal("x", &ErrandProposalInput { errand: e.clone(), from_run_id: None }).is_err());
+        e.repeat = String::new();
+        e.target = "codex".into();
+        let p = s.add_errand_proposal("x", &ErrandProposalInput { errand: e, from_run_id: None }).unwrap();
+        let made = s.approve_errand_proposal(p.id, None).unwrap();
+        assert_eq!(made.target, "codex");
     }
 }

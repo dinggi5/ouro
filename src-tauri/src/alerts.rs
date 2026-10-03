@@ -80,6 +80,23 @@ fn nap(events: &[Event], now: i64) -> Duration {
         .unwrap_or(MAX_NAP)
 }
 
+/// «오후 3:05» — 로컬 시각을 팝오버(`Intl` ko-KR)와 같은 모양으로.
+pub(crate) fn clock(ms: i64) -> String {
+    Local
+        .timestamp_millis_opt(ms)
+        .earliest()
+        .map(|d| {
+            let (ampm, h12) = match d.hour() {
+                0 => ("오전", 12),
+                h @ 1..=11 => ("오전", h),
+                12 => ("오후", 12),
+                h => ("오후", h - 12),
+            };
+            format!("{ampm} {h12}:{}", d.format("%M"))
+        })
+        .unwrap_or_default()
+}
+
 /// 알림 문구 (순수 — 테스트 가능). 제목 = 일정 제목, 본문 = 언제.
 fn notice(e: &Event, now: i64) -> (String, String) {
     let body = if e.all_day {
@@ -89,19 +106,7 @@ fn notice(e: &Event, now: i64) -> (String, String) {
         }
     } else {
         let start = e.start_at.unwrap_or(now);
-        let at = Local
-            .timestamp_millis_opt(start)
-            .earliest()
-            .map(|d| {
-                let (ampm, h12) = match d.hour() {
-                    0 => ("오전", 12),
-                    h @ 1..=11 => ("오전", h),
-                    12 => ("오후", 12),
-                    h => ("오후", h - 12),
-                };
-                format!("{ampm} {h12}:{}", d.format("%M"))
-            })
-            .unwrap_or_default();
+        let at = clock(start);
         let mins = (start - now + 30_000).div_euclid(60_000);
         if mins <= 0 {
             format!("지금 · {at}")
@@ -198,6 +203,11 @@ pub(crate) fn start(store: Arc<Store>, backup_dir: PathBuf) -> Alerts {
                     }
                     // 실패하면 다음 바퀴에 다시 — 디스크가 잠깐 찼을 수 있다.
                     *backup_err.lock().unwrap_or_else(|p| p.into_inner()) = res.err().map(|e| format!("오늘 백업을 못 했어요 — {e}"));
+                }
+
+                // 아침 브리핑 — 하루 한 번(brief.rs).
+                if let Some(body) = crate::brief::morning_due(&store, now) {
+                    show_notification("오늘", &body, || {});
                 }
 
                 let events = store

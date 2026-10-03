@@ -556,8 +556,23 @@ fn errand_proposal_input(args: &Value) -> Result<ErrandProposalInput, String> {
         None | Some(Value::Null) => None,
         Some(v) => Some(v.as_i64().ok_or("from_run_id 는 숫자예요")?),
     };
+    let target = match args.get("target").and_then(Value::as_str) {
+        None | Some("claude") => "claude",
+        Some("codex") => "codex",
+        Some(_) => return Err("target 은 claude 또는 codex 예요".into()),
+    };
+    if args.get("target").is_some_and(|v| !v.is_null() && !v.is_string()) {
+        return Err("target 은 claude 또는 codex 예요".into());
+    }
     Ok(ErrandProposalInput {
-        errand: ErrandInput { prompt: prompt.to_string(), start_at, allowed_tools: allowed_tools.into(), late: late.into() },
+        errand: ErrandInput {
+            prompt: prompt.to_string(),
+            start_at,
+            allowed_tools: allowed_tools.into(),
+            late: late.into(),
+            target: target.into(),
+            ..ErrandInput::default()
+        },
         from_run_id,
     })
 }
@@ -572,6 +587,7 @@ fn errand_proposal_json(store: &Store, p: &ErrandProposal) -> Result<Value, Stri
             "weekday": weekday(ms_date(p.start_at)),
             "allow_web_search": p.allowed_tools == "WebSearch",
             "if_missed": p.late,
+            "target": p.target,
         });
         return Ok(out);
     }
@@ -716,7 +732,7 @@ mod tests {
             assert!(handle(&s, &req(op, json!({"id": id})), now()).is_err(), "{op}");
         }
         // 사람이 고쳐서 받았다 — AI 가 받는 답엔 글도 답도 없다.
-        let mine = ErrandInput { prompt: "비밀 내용".into(), start_at: crate::store::now_ms() + 60_000, allowed_tools: String::new(), late: "run".into() };
+        let mine = ErrandInput { prompt: "비밀 내용".into(), start_at: crate::store::now_ms() + 60_000, ..ErrandInput::default() };
         let e = s.approve_errand_proposal(id, Some(&mine)).unwrap();
         let q = handle(&s, &req("errand_proposal", json!({"id": id})), now()).unwrap();
         assert_eq!((q["status"].clone(), q["run_status"].clone()), (json!("approved"), json!("waiting")));

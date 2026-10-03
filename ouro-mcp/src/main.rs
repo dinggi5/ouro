@@ -5,7 +5,7 @@
 //   find_free_time        빈 시간
 //   propose_event         일정 «제안» → 팝오버에 카드. 사람이 «넣기» 를 눌러야 일정이 된다
 //   get_proposal          일정 제안이 어떻게 됐나
-//   propose_errand        «부탁» 제안(Claude Code 에게 시킬 글) → 카드에 보낼 원문이 그대로 보인다. 사람이 «승인» 해야 부탁이 되고, 그제야 돈다
+//   propose_errand        «부탁» 제안(Claude Code·Codex 에게 시킬 글) → 카드에 보낼 원문이 그대로 보인다. 사람이 «승인» 해야 부탁이 되고, 그제야 돈다
 //   get_errand_proposal   부탁 제안이 어떻게 됐나(받은 뒤엔 상태만 — 글·답은 안 준다)
 //
 // 이 바이너리는 DB 를 열지 않는다(CLAUDE.md). 도구마다 `~/.ouro/ouro.sock` 에 한 줄 JSON 을 보내고 한 줄 답을 받아
@@ -157,7 +157,7 @@ struct ProposalArgs {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ErrandArgs {
-    /// The exact text to send to Claude Code (max 4000 characters). The user sees it verbatim on the approval card and
+    /// The exact text to send (max 4000 characters). The user sees it verbatim on the approval card and
     /// it is sent as-is. The receiving Claude sees ONLY this text — no calendar, no conversation — so make it
     /// self-contained and say what the answer should look like.
     prompt: String,
@@ -173,6 +173,9 @@ struct ErrandArgs {
     /// Chains of answer → errand are limited to 3 steps.
     #[schemars(transform = plain_optional)]
     from_run_id: Option<i64>,
+    /// Who receives it: "claude" (Claude Code, default) or "codex" (OpenAI Codex CLI).
+    #[schemars(transform = plain_optional)]
+    target: Option<String>,
 }
 
 /// 제안을 내고 사람의 결정을 최대 60초 기다린다(일정·부탁 제안이 같이 쓴다). 그 안에 안 눌리면 `pending` 으로 돌려준다 — 제안은 팝오버에 남는다.
@@ -251,7 +254,8 @@ impl Ouro {
     }
 
     #[tool(
-        description = "Proposes an ERRAND: a message the user's Claude Code will run at a set time on this Mac. This does \
+        description = "Proposes an ERRAND: a one-time message the user's Claude Code (or Codex, with target \"codex\") will \
+        run at a set time on this Mac. This does \
         NOT schedule it: a card appears in the Ouro popover showing the exact text that would be sent, and nothing runs \
         until the user approves it (they can edit or decline). Waits up to 60 seconds and returns `status` (approved / \
         rejected / pending / expired); once approved it also returns `run_status` and `run_id` — never the errand's text \
@@ -263,7 +267,7 @@ impl Ouro {
     async fn propose_errand(&self, Parameters(a): Parameters<ErrandArgs>) -> Result<CallToolResult, McpError> {
         let args = json!({
             "prompt": a.prompt, "start": a.start, "allow_web_search": a.allow_web_search,
-            "if_missed": a.if_missed, "from_run_id": a.from_run_id,
+            "if_missed": a.if_missed, "from_run_id": a.from_run_id, "target": a.target,
         });
         propose_and_wait(&self.client(), "propose_errand", "errand_proposal", args).await
     }
@@ -360,7 +364,7 @@ mod tests {
             (schema_for_type::<ProposalArgs>().as_ref().clone(), &[], &["id"]),
             (
                 schema_for_type::<ErrandArgs>().as_ref().clone(),
-                &["allow_web_search", "if_missed", "from_run_id"],
+                &["allow_web_search", "if_missed", "from_run_id", "target"],
                 &["prompt", "start"],
             ),
         ];

@@ -15,7 +15,7 @@ import { ErrandProposalCard } from "./components/ErrandProposalCard";
 import { ProposalCard } from "./components/ProposalCard";
 import { QuickBar } from "./components/QuickBar";
 import { blankErrandDraft, errandInputToDraft, errandToDraft, ErrandSheet, type ErrandDraft } from "./components/ErrandSheet";
-import { errandApi, rowsOn, type Errand, type ErrandInput } from "./lib/errands";
+import { errandApi, rowsOn, type Briefing, type Errand, type ErrandInput, type QuickErrand } from "./lib/errands";
 import {
   asEvent,
   clientLabel,
@@ -138,6 +138,7 @@ function App() {
   const [errandProposals, setErrandProposals] = useState<ErrandProposal[]>([]);
   const [proposalBusy, setProposalBusy] = useState(false);
   const [aiClients, setAiClients] = useState<string[]>([]);
+  const [brief, setBrief] = useState<Briefing | null>(null);
   const quickRef = useRef<HTMLInputElement>(null);
 
   // 자정이 지나면 «오늘» 에 머물던 커서도 따라 넘어간다. 다른 날을 보고 있었다면 그대로 둔다.
@@ -183,10 +184,11 @@ function App() {
   const reload = useCallback(async () => {
     const seq = ++eventsSeq.current;
     try {
-      const [list, errs] = await Promise.all([api.list(from, to), errandApi.list(from, to)]);
+      const [list, errs, b] = await Promise.all([api.list(from, to), errandApi.list(from, to), errandApi.briefing().catch(() => null)]);
       if (seq !== eventsSeq.current) return;
       setEvents(list);
       setErrands(errs);
+      setBrief(b);
       setFatal(null);
     } catch (e) {
       if (seq === eventsSeq.current) setFatal(errorText(e));
@@ -347,16 +349,23 @@ function App() {
   };
 
   /** 빠른 입력 확정. 날짜를 알아들었고 모양이 맞으면 바로 넣고, 아니면(또는 ⌘↩) 그 초안으로 시트를 연다. */
-  const quickCommit = async (q: QuickDraft, detail: boolean, errand: boolean) => {
+  const quickCommit = async (q: QuickDraft, detail: boolean, errand: QuickErrand | null) => {
     if (errand) {
-      // «클로드한테» — 부탁. 문장은 날짜 말을 걷어 낸 제목이고, 날짜·시각은 파서가 읽은 대로(없으면 다음 정각)다. 늘 시트로.
-      const blank = blankErrandDraft(sameDay(cursor, new Date()) ? nextHour(new Date()) : new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate(), 9));
+      // «클로드한테»·«코덱스한테» — 부탁. 문장은 날짜 말을 걷어 낸 제목이고, 날짜·시각은 파서가 읽은 대로(없으면 다음 정각)다. 늘 시트로.
+      // «매일·평일·매주» 는 반복으로 — 첫 회차 날짜는 파서가 정한다.
+      const blank = {
+        ...blankErrandDraft(
+          sameDay(cursor, new Date()) ? nextHour(new Date()) : new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate(), 9),
+          errand.target,
+        ),
+        repeat: errand.repeat,
+      };
       const at = q.startDate && !q.allDay ? combine(q.startDate, q.startTime ?? "09:00") : null;
       const draft: ErrandDraft = at
         ? { ...blank, prompt: q.title, date: ymd(at), time: hm(at) }
         : { ...blank, prompt: q.title, ...(q.startDate ? { date: q.startDate } : {}) };
       const notice = [
-        ...q.warnings,
+        ...errand.warnings(q.warnings),
         ...(q.startDate ? [] : ["날짜를 못 찾아서 다음 정각으로 잡았어요"]),
       ];
       setErrandSheet({ id: null, draft, key: ++sheetKey.current, fromQuick: true, notice });
@@ -460,6 +469,24 @@ function App() {
     } finally {
       setProposalBusy(false);
       loadProposals();
+    }
+  };
+
+  /** 답 시트의 «이어서 부탁» — 그 답의 대화를 잇는 새 부탁. 때는 «지금»(그대로 만들면 바로 돈다). */
+  const followUp = (e: Errand) => {
+    if (!e.run) return;
+    const draft = { ...blankErrandDraft(new Date(), e.target), resumeRunId: e.run.id, resumeTitle: e.title };
+    setErrandSheet({ id: null, draft, key: ++sheetKey.current, notice: ["때를 그대로 두면 만들자마자 돌아요."] });
+  };
+
+  const toggleMorning = async () => {
+    if (!brief) return;
+    try {
+      await errandApi.setMorning(!brief.morning);
+      setBrief({ ...brief, morning: !brief.morning });
+      showToast(brief.morning ? "아침 브리핑 알림을 껐어요" : "매일 아침 8시에 알려 드려요");
+    } catch (e) {
+      showToast(errorText(e));
     }
   };
 
@@ -615,7 +642,22 @@ function App() {
         {fatal ? (
           <Empty text={fatal} />
         ) : view === "day" ? (
-          <DayBody day={cursor} events={events} errands={errands} now={nowMs} onOpen={openEdit} onOpenErrand={openErrand} />
+          <>
+            {atToday && brief && brief.parts.length > 0 && (
+              <p className="num mb-3 flex items-baseline gap-2 text-caption text-ink-muted">
+                <span className="min-w-0 flex-1">{brief.parts.join(" · ")}</span>
+                <button
+                  type="button"
+                  onClick={() => void toggleMorning()}
+                  title={brief.morning ? "매일 아침 8시에 이 요약을 알림으로 받아요" : "아침 알림이 꺼져 있어요"}
+                  className="shrink-0 text-micro text-ink-muted hover:text-ink-secondary"
+                >
+                  {brief.morning ? "아침 알림 켬" : "아침 알림 끔"}
+                </button>
+              </p>
+            )}
+            <DayBody day={cursor} events={events} errands={errands} now={nowMs} onOpen={openEdit} onOpenErrand={openErrand} />
+          </>
         ) : view === "week" ? (
           <WeekBody
             cursor={cursor}
@@ -698,6 +740,7 @@ function App() {
             onDelete={() => void removeErrand()}
             onRunNow={errandAction(() => errandApi.runNow(errandSheet.id as number))}
             onStop={errandAction(() => errandApi.stop(openSheetErrand?.run?.id ?? 0))}
+            onFollowUp={() => openSheetErrand && followUp(openSheetErrand)}
             onClose={() => setErrandSheet(null)}
           />
         </>

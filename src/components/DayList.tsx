@@ -3,7 +3,7 @@
 
 import { addDays, fmt, startOfDay } from "../lib/time";
 import type { OuroEvent } from "../lib/events";
-import { stateLabel, stateOf, unread, type Errand, type ErrandState, type Row } from "../lib/errands";
+import { stateLabel, stateOf, targetLabel, unread, type Errand, type ErrandState, type Row } from "../lib/errands";
 
 function timeLabel(e: OuroEvent, day: Date): string {
   if (e.allDay) return "종일";
@@ -87,7 +87,8 @@ export function DayList({
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-body-sm">{r.title}</span>
                   <span className={`block text-micro ${unread(r) ? "text-accent" : "text-ink-muted"}`}>
-                    Claude Code · {stateLabel(r)}
+                    {targetLabel(r.target)}
+                    {r.series && " · 반복"} · {stateLabel(r)}
                   </span>
                 </span>
               </button>

@@ -9,11 +9,16 @@ import {
   durationLabel,
   LATE_OPTIONS,
   lateLabel,
+  REPEAT_OPTIONS,
+  repeatLabel,
   stateLabel,
   stateOf,
+  TARGET_OPTIONS,
+  targetLabel,
   TOOL_OPTIONS,
   type Errand,
   type ErrandInput,
+  type Target,
 } from "../lib/errands";
 import { fmt } from "../lib/time";
 
@@ -23,24 +28,61 @@ export type ErrandDraft = {
   time: string;
   allowedTools: string;
   late: "run" | "skip";
+  target: Target;
+  repeat: string;
+  carry: boolean;
+  /** «이어서 부탁» — 잇는 실행과 그 부탁 제목. 만들 때만 정해진다. */
+  resumeRunId: number | null;
+  resumeTitle: string | null;
 };
 
-export function blankErrandDraft(at: Date): ErrandDraft {
-  return { prompt: "", date: ymd(at), time: hm(at), allowedTools: "", late: "run" };
+export function blankErrandDraft(at: Date, target: Target = "claude"): ErrandDraft {
+  return {
+    prompt: "",
+    date: ymd(at),
+    time: hm(at),
+    allowedTools: "",
+    late: "run",
+    target,
+    repeat: "",
+    carry: false,
+    resumeRunId: null,
+    resumeTitle: null,
+  };
 }
 
-export function errandInputToDraft(e: ErrandInput): ErrandDraft {
+export function errandInputToDraft(e: ErrandInput, resumeTitle: string | null = null): ErrandDraft {
   const d = new Date(e.startAt);
-  return { prompt: e.prompt, date: ymd(d), time: hm(d), allowedTools: e.allowedTools, late: e.late };
+  return {
+    prompt: e.prompt,
+    date: ymd(d),
+    time: hm(d),
+    allowedTools: e.allowedTools,
+    late: e.late,
+    target: e.target,
+    repeat: e.repeat,
+    carry: e.carry,
+    resumeRunId: e.resumeRunId,
+    resumeTitle,
+  };
 }
 
-export const errandToDraft = (e: Errand): ErrandDraft => errandInputToDraft(e);
+export const errandToDraft = (e: Errand): ErrandDraft => errandInputToDraft(e, e.resumeTitle);
 
 function toInput(d: ErrandDraft): ErrandInput | string {
   if (!d.prompt.trim()) return "부탁할 말을 적어 주세요";
   const at = combine(d.date, d.time);
   if (!at) return "없는 날짜·시각이에요 — 확인해 주세요";
-  return { prompt: d.prompt, startAt: at.getTime(), allowedTools: d.allowedTools, late: d.late };
+  return {
+    prompt: d.prompt,
+    startAt: at.getTime(),
+    allowedTools: d.allowedTools,
+    late: d.late,
+    target: d.target,
+    repeat: d.resumeRunId === null ? d.repeat : "",
+    carry: d.repeat !== "" && d.resumeRunId === null && d.carry,
+    resumeRunId: d.resumeRunId,
+  };
 }
 
 const field =
@@ -63,6 +105,7 @@ export function ErrandSheet({
   onDelete,
   onRunNow,
   onStop,
+  onFollowUp,
   onClose,
 }: {
   /** 이미 있는 부탁이면 그것(App 이 목록에서 늘 최신으로 넘긴다 — 도는 중 → 답이 오면 이 시트가 따라 바뀐다). 새 부탁이면 null. */
@@ -75,6 +118,8 @@ export function ErrandSheet({
   onDelete: () => void;
   onRunNow: () => Promise<string | null>;
   onStop: () => Promise<string | null>;
+  /** 답 시트의 «이어서 부탁» — 이 답의 대화를 잇는 새 부탁 시트를 연다. */
+  onFollowUp: () => void;
   onClose: () => void;
 }) {
   const [d, setD] = useState<ErrandDraft>(initial);
@@ -134,9 +179,12 @@ export function ErrandSheet({
     const st = stateOf(errand);
     const late = lateLabel(run.lateMs);
     const meta = [
+      targetLabel(errand.target),
       fmt.time.format(run.startedAt),
       durationLabel(run),
       late,
+      run.resumed ? "앞 대화에 이어서" : null,
+      errand.series ? "반복" : null,
     ].filter(Boolean);
     return (
       <section className="sheet-in absolute inset-x-0 bottom-0 top-3 flex flex-col rounded-t-xl bg-surface" aria-label="부탁과 답">
@@ -150,7 +198,7 @@ export function ErrandSheet({
             </p>
           </div>
 
-          {st === "running" && <p className="text-body-sm text-ink-muted">Claude Code 가 일하는 중이에요…</p>}
+          {st === "running" && <p className="text-body-sm text-ink-muted">{targetLabel(errand.target)} 가 일하는 중이에요…</p>}
           {st === "done" && (
             <div className="select-text whitespace-pre-wrap break-words text-body-sm text-ink">{run.response}</div>
           )}
@@ -182,6 +230,11 @@ export function ErrandSheet({
                 <button type="button" onClick={onDelete} className={`${ghost} text-danger`}>
                   삭제
                 </button>
+                {run.canResume && (
+                  <button type="button" onClick={onFollowUp} className={`${ghost} text-ink`}>
+                    이어서 부탁
+                  </button>
+                )}
                 <button type="button" disabled={busy} onClick={() => void guard(onRunNow)} className={primary}>
                   다시 실행
                 </button>
@@ -210,22 +263,67 @@ export function ErrandSheet({
             {n}
           </p>
         ))}
+        {d.resumeRunId !== null && (
+          <p className="text-caption text-accent">
+            «{d.resumeTitle ?? "앞 부탁"}» 의 대화에 이어서 — {targetLabel(d.target)} 가 앞 대화를 기억해요.
+          </p>
+        )}
         <textarea
           ref={ref}
           value={d.prompt}
           onChange={(e) => set({ prompt: e.target.value })}
-          placeholder="Claude Code 에게 부탁할 말"
+          placeholder={`${targetLabel(d.target)} 에게 부탁할 말`}
           rows={5}
           maxLength={4000}
           className="min-h-32 resize-none rounded-md bg-surface-sunken px-3 py-2.5 text-body-sm text-ink outline-none transition-shadow duration-100 placeholder:text-ink-muted focus:shadow-[inset_0_0_0_1.5px_var(--ink-secondary)]"
         />
-        <p className="-mt-1 text-micro text-ink-muted">위 글이 그대로 Claude Code 로 나가요. 일정 내용은 따로 붙지 않아요.</p>
+        <p className="-mt-1 text-micro text-ink-muted">
+          위 글이 그대로 {targetLabel(d.target)} 로 나가요. 일정 내용은 따로 붙지 않아요.
+        </p>
+
+        <label className="grid grid-cols-[2.5rem_1fr] items-center gap-2">
+          <span className="text-caption text-ink-muted">누구</span>
+          <select
+            value={d.target}
+            disabled={d.resumeRunId !== null}
+            onChange={(e) => set({ target: e.target.value as Target })}
+            className={`${field} disabled:opacity-60`}
+          >
+            {TARGET_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </label>
 
         <div className="grid grid-cols-[2.5rem_minmax(0,1fr)_8.5rem] items-center gap-2">
           <span className="text-caption text-ink-muted">때</span>
           <input type="date" value={d.date} onChange={(e) => set({ date: e.target.value })} className={`${field} num`} />
           <input type="time" value={d.time} onChange={(e) => set({ time: e.target.value })} className={`${field} num`} />
         </div>
+
+        {d.resumeRunId === null && (
+          <label className="grid grid-cols-[2.5rem_1fr] items-center gap-2">
+            <span className="text-caption text-ink-muted">반복</span>
+            <select value={d.repeat} onChange={(e) => set({ repeat: e.target.value })} className={field}>
+              {REPEAT_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {d.resumeRunId === null && d.repeat !== "" && (
+          <label className="grid grid-cols-[2.5rem_1fr] items-center gap-2">
+            <span className="text-caption text-ink-muted">대화</span>
+            <select value={d.carry ? "carry" : "fresh"} onChange={(e) => set({ carry: e.target.value === "carry" })} className={field}>
+              <option value="fresh">{repeatLabel(d.repeat)} 새 대화로</option>
+              <option value="carry">지난 대화에 이어서</option>
+            </select>
+          </label>
+        )}
 
         <label className="grid grid-cols-[2.5rem_1fr] items-center gap-2">
           <span className="text-caption text-ink-muted">도구</span>
