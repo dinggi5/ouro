@@ -12,4 +12,8 @@
 - 불변 규칙: 바깥에서 들어온 글(.ics·AI 답)은 부탁 문장이 될 수 없다 / AI 가 만든 부탁은 사람 승인 전엔 안 돈다 / 바깥으로 나간 원문은 저장한다.
 - 날짜 계산은 LLM 이 아니라 결정적 파서가 한다.
 - 원격: `backup` = 비공개 `dinggi5/ouro-dev`(`DEVLOG.md` 포함, 세션 끝에 `git push backup main`). `origin` 이라는 이름은 쓰지 않는다(사이드바 묶음 이름이 바뀐다).
-  공개 오픈소스는 **배포(개발 8) 때부터** — `scripts/publish-public.sh` 가 일지를 이력에서 걸러 `public` 원격에 올린다.
+  `public` = 공개 `dinggi5/ouro`(개발 8 부터) — `scripts/publish-public.sh` 가 일지를 이력에서 걸러 올린다. 커밋 해시가 달라서 `git fetch public` 은 `--no-tags` 로.
+- 배포: 버전 여섯 곳 + `docs/release-notes/vX.Y.Z.md` → main 머지·`git push backup main` → 메인 체크아웃에서 `./scripts/release.sh --publish`(`docs/RELEASE.md`).
+  업데이트 서명 키 `~/.tauri/ouro-updater.key` 는 잃으면 기존 사용자가 영영 업데이트를 못 받는다.
+- 최소 macOS 26 의 정본은 `src-tauri/Info.plist`(LSMinimumSystemVersion). `tauri.conf.json` 의 minimumSystemVersion 은 **일부러 11.0** —
+  Xcode 27 링커가 배포 타깃 26 으로 만든 proc-macro dylib 을 dyld 가 거부한다(Info.plist 주석).

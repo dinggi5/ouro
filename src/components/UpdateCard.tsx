@@ -63,6 +63,14 @@ export function UpdateCard({ u, hidden }: { u: UpdateState; hidden: boolean }) {
 
 /** 저절로 찾았을 때(또는 카드가 제안에 밀렸을 때) 아래에 한 줄 — 누르면 카드를 펼친다. */
 export function UpdateLine({ u, cardHidden }: { u: UpdateState; cardHidden: boolean }) {
+  if (cardHidden && u.open && !u.info) {
+    // 사람이 «업데이트 확인…» 을 눌렀는데 제안 카드 때문에 결과 카드가 숨었다 — 결과(최신·오류)를 이 줄로 보인다(코덱스 개발 8 2차).
+    return (
+      <button type="button" onClick={u.close} className="flex shrink-0 items-center px-5 pt-2 text-left text-micro text-ink-secondary hover:text-ink">
+        {u.checking ? "업데이트 확인하는 중…" : `${u.message ?? ""} · 닫기`}
+      </button>
+    );
+  }
   if (!u.info || (u.open && !cardHidden)) return null;
   return (
     <button
