@@ -29,10 +29,12 @@ export function blankErrandDraft(at: Date): ErrandDraft {
   return { prompt: "", date: ymd(at), time: hm(at), allowedTools: "", late: "run" };
 }
 
-export function errandToDraft(e: Errand): ErrandDraft {
+export function errandInputToDraft(e: ErrandInput): ErrandDraft {
   const d = new Date(e.startAt);
   return { prompt: e.prompt, date: ymd(d), time: hm(d), allowedTools: e.allowedTools, late: e.late };
 }
+
+export const errandToDraft = (e: Errand): ErrandDraft => errandInputToDraft(e);
 
 function toInput(d: ErrandDraft): ErrandInput | string {
   if (!d.prompt.trim()) return "부탁할 말을 적어 주세요";
@@ -56,6 +58,7 @@ export function ErrandSheet({
   errand,
   initial,
   notice,
+  proposal,
   onSave,
   onDelete,
   onRunNow,
@@ -66,6 +69,8 @@ export function ErrandSheet({
   errand: Errand | null;
   initial: ErrandDraft;
   notice?: string[];
+  /** AI 의 제안을 고치는 시트 — 저장 = 승인(`approve_errand_proposal`). */
+  proposal?: boolean;
   onSave: (input: ErrandInput) => Promise<string | null>;
   onDelete: () => void;
   onRunNow: () => Promise<string | null>;
@@ -196,9 +201,9 @@ export function ErrandSheet({
         if (e.key === "Enter" && e.metaKey) submit();
       }}
       className="sheet-in absolute inset-x-0 bottom-0 top-3 flex flex-col rounded-t-xl bg-surface"
-      aria-label={errand ? "부탁 고치기" : "새 부탁"}
+      aria-label={proposal ? "제안 고치기" : errand ? "부탁 고치기" : "새 부탁"}
     >
-      {header(errand ? "부탁" : "새 부탁")}
+      {header(proposal ? "제안 고치기" : errand ? "부탁" : "새 부탁")}
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-5 pb-4">
         {notice?.map((n) => (
           <p key={n} className="text-caption text-ink-muted">
@@ -264,7 +269,7 @@ export function ErrandSheet({
             </>
           )}
           <button type="submit" disabled={busy} className={primary}>
-            {errand ? "저장" : "만들기"}
+            {proposal ? "승인" : errand ? "저장" : "만들기"}
           </button>
         </div>
       </footer>

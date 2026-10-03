@@ -162,7 +162,7 @@ fn validate(input: &EventInput) -> Result<Valid, String> {
 
 /// 스키마 이력. `PRAGMA user_version` = 적용된 개수. **이미 나간 항목은 절대 고치지 않는다** —
 /// 사용자 DB 는 옛 항목이 이미 돌아간 상태라, 바꿀 게 생기면 새 항목을 뒤에 붙인다.
-const MIGRATIONS: &[&str] = &[
+pub(crate) const MIGRATIONS: &[&str] = &[
     // 1 — 개발 2: 일정·부탁·실행.
     "
     CREATE TABLE items (
@@ -265,12 +265,32 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE runs ADD COLUMN late_ms INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE runs ADD COLUMN read_at INTEGER;
     ",
+    // 5 — 개발 6: AI 가 MCP 로 낸 «부탁 제안». 사람이 승인해야 `items`+`errands` 가 생기고(approved_at 이 찍힌 채로) 그제야 돈다.
+    //     `parent_run_id`·`depth` = 어느 실행의 답에서 이어진 부탁인가(PLAN §9-4: 깊이 ≤ 3). 결정된 제안은 남겨 둔다.
+    "
+    CREATE TABLE errand_proposals (
+        id            INTEGER PRIMARY KEY,
+        client        TEXT    NOT NULL,
+        prompt        TEXT    NOT NULL,
+        start_at      INTEGER NOT NULL,
+        allowed_tools TEXT    NOT NULL DEFAULT '',
+        late          TEXT    NOT NULL DEFAULT 'run' CHECK (late IN ('run', 'skip')),
+        parent_run_id INTEGER REFERENCES runs (id) ON DELETE SET NULL,
+        depth         INTEGER NOT NULL DEFAULT 0,
+        status        TEXT    NOT NULL DEFAULT 'pending'
+                      CHECK (status IN ('pending', 'approved', 'rejected', 'expired')),
+        created_at    INTEGER NOT NULL,
+        decided_at    INTEGER,
+        errand_id     INTEGER REFERENCES items (id) ON DELETE SET NULL
+    );
+    CREATE INDEX errand_proposals_pending ON errand_proposals (created_at) WHERE status = 'pending';
+    ",
 ];
 
 /// 한꺼번에 기다릴 수 있는 제안 수. AI 가 고리에 빠져 수백 개를 쌓아 팝오버를 덮지 않게.
 const PENDING_MAX: i64 = 20;
 /// 이만큼 아무도 안 누른 제안은 만료 — 한 주 전 대화의 제안이 불쑥 일정이 되지 않게.
-const PROPOSAL_KEEP_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+pub(crate) const PROPOSAL_KEEP_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 /// 제안을 낸 클라이언트 이름 길이 상한(보여 주기만 하는 칸).
 const CLIENT_MAX: usize = 60;
 
@@ -484,10 +504,7 @@ impl Store {
         input.private = false;
         let v = validate(&input)?;
         let (sa, ea, sd, ed) = split_when(&v.when);
-        let client: String = match client.trim() {
-            "" => "unknown".into(),
-            c => c.chars().filter(|c| !c.is_control()).take(CLIENT_MAX).collect(),
-        };
+        let client = client_name(client);
         let now = now_ms();
         let id = {
             let conn = self.conn();
@@ -715,7 +732,15 @@ fn split_when(w: &When) -> (Option<i64>, Option<i64>, Option<String>, Option<Str
     }
 }
 
-fn proposal_gone(status: &str) -> &'static str {
+/// 제안을 낸 클라이언트가 밝힌 이름을 보여 줄 모양으로 — 제어 문자 빼고 60자(일정·부탁 제안이 같이 쓴다).
+pub(crate) fn client_name(c: &str) -> String {
+    match c.trim() {
+        "" => "unknown".into(),
+        c => c.chars().filter(|c| !c.is_control()).take(CLIENT_MAX).collect(),
+    }
+}
+
+pub(crate) fn proposal_gone(status: &str) -> &'static str {
     match status {
         "approved" => "이미 넣은 제안이에요",
         "rejected" => "이미 거절한 제안이에요",

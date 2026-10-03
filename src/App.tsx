@@ -11,11 +11,21 @@ import "./App.css";
 import { DayList } from "./components/DayList";
 import { MonthGrid, monthGridRange } from "./components/MonthGrid";
 import { blankDraft, EventSheet, fromEvent, toInput, type Draft } from "./components/EventSheet";
+import { ErrandProposalCard } from "./components/ErrandProposalCard";
 import { ProposalCard } from "./components/ProposalCard";
 import { QuickBar } from "./components/QuickBar";
-import { blankErrandDraft, errandToDraft, ErrandSheet, type ErrandDraft } from "./components/ErrandSheet";
+import { blankErrandDraft, errandInputToDraft, errandToDraft, ErrandSheet, type ErrandDraft } from "./components/ErrandSheet";
 import { errandApi, rowsOn, type Errand, type ErrandInput } from "./lib/errands";
-import { asEvent, clientLabel, proposalApi, type Proposal } from "./lib/proposals";
+import {
+  asEvent,
+  clientLabel,
+  errandInputOf,
+  errandProposalApi,
+  proposalApi,
+  queueOf,
+  type ErrandProposal,
+  type Proposal,
+} from "./lib/proposals";
 import { api, errorText, type EventInput, type OuroEvent } from "./lib/events";
 import { canDirect, quickApi, quickToDraft, type QuickDraft } from "./lib/quick";
 import {
@@ -99,7 +109,15 @@ type Sheet = {
   proposalId?: number;
 };
 /** 부탁 시트. id = 이미 있는 부탁(목록에서 늘 최신으로 찾는다), null = 새 부탁. */
-type ErrandSheetState = { id: number | null; draft: ErrandDraft; key: number; fromQuick?: boolean; notice?: string[] };
+/** proposalId = AI 부탁 제안을 고쳐서 승인하는 시트 — 저장이 `approve_errand_proposal` 로 간다. */
+type ErrandSheetState = {
+  id: number | null;
+  draft: ErrandDraft;
+  key: number;
+  fromQuick?: boolean;
+  notice?: string[];
+  proposalId?: number;
+};
 type Toast = { text: string; undo?: () => void; key: number };
 
 function App() {
@@ -117,6 +135,7 @@ function App() {
   const sheetKey = useRef(0);
   const [quickText, setQuickText] = useState("");
   const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [errandProposals, setErrandProposals] = useState<ErrandProposal[]>([]);
   const [proposalBusy, setProposalBusy] = useState(false);
   const [aiClients, setAiClients] = useState<string[]>([]);
   const quickRef = useRef<HTMLInputElement>(null);
@@ -198,10 +217,15 @@ function App() {
 
   // AI 제안. 새 제안이 오면 러스트가 팝오버를 띄우고 «proposals-changed» 를 보낸다 — 이미 떠 있던 팝오버엔 focus 가 안 오니 이벤트로 듣는다.
   const proposalsSeq = useRef(0);
+  const errandProposalsSeq = useRef(0);
   const loadProposals = useCallback(() => {
     const seq = ++proposalsSeq.current;
     proposalApi.list().then((list) => {
       if (seq === proposalsSeq.current) setProposals(list);
+    }, () => {});
+    const eseq = ++errandProposalsSeq.current;
+    errandProposalApi.list().then((list) => {
+      if (eseq === errandProposalsSeq.current) setErrandProposals(list);
     }, () => {});
   }, []);
   useEffect(() => {
@@ -272,7 +296,13 @@ function App() {
 
   const saveErrand = async (input: ErrandInput): Promise<string | null> => {
     try {
-      const saved = errandSheet?.id != null ? await errandApi.update(errandSheet.id, input) : await errandApi.create(input);
+      const saved =
+        errandSheet?.proposalId !== undefined
+          ? await errandProposalApi.approve(errandSheet.proposalId, input)
+          : errandSheet?.id != null
+            ? await errandApi.update(errandSheet.id, input)
+            : await errandApi.create(input);
+      if (errandSheet?.proposalId !== undefined) loadProposals();
       if (errandSheet?.fromQuick) setQuickText("");
       setErrandSheet(null);
       const day = new Date(saved.startAt);
@@ -396,6 +426,52 @@ function App() {
     }
   };
 
+  /** 부탁 제안 «승인» — 그대로. 되돌리기 = 만든 부탁을 지운다(제안은 «받음» 으로 남는다, 기록이라서). */
+  const approveErrandProposal = async (p: ErrandProposal) => {
+    setProposalBusy(true);
+    try {
+      const saved = await errandProposalApi.approve(p.id);
+      const day = new Date(saved.startAt);
+      if (!sameDay(day, cursor)) setCursor(startOfDay(day));
+      await reload();
+      showToast("부탁을 걸었어요", async () => {
+        setToast(null);
+        try {
+          await errandApi.remove(saved.id);
+          await reload();
+        } catch (err) {
+          showToast(errorText(err));
+        }
+      });
+    } catch (e) {
+      showToast(errorText(e));
+    } finally {
+      setProposalBusy(false);
+      loadProposals();
+    }
+  };
+
+  const rejectErrandProposal = async (p: ErrandProposal) => {
+    setProposalBusy(true);
+    try {
+      await errandProposalApi.reject(p.id);
+    } catch (e) {
+      showToast(errorText(e));
+    } finally {
+      setProposalBusy(false);
+      loadProposals();
+    }
+  };
+
+  const editErrandProposal = (p: ErrandProposal) =>
+    setErrandSheet({
+      id: null,
+      draft: errandInputToDraft(errandInputOf(p)),
+      key: ++sheetKey.current,
+      proposalId: p.id,
+      notice: [`${clientLabel(p.client)} 가 낸 제안이에요 — 글을 고치면 고친 글이 나가요. 승인해야 부탁이 돼요.`],
+    });
+
   const editProposal = (p: Proposal) =>
     setSheet({ draft: fromEvent(asEvent(p)), editing: null, key: ++sheetKey.current, proposalId: p.id });
 
@@ -460,6 +536,9 @@ function App() {
   const t = title(view, cursor);
   const atToday = sameDay(cursor, today);
   const nowMs = now.getTime();
+  // 일정 제안과 부탁 제안을 도착 순서대로 한 줄로 세운다 — 카드는 맨 앞 하나만.
+  const queue = useMemo(() => queueOf(proposals, errandProposals), [proposals, errandProposals]);
+  const top = queue[0];
 
   return (
     <main className="relative flex h-screen w-full flex-col overflow-hidden rounded-lg bg-canvas text-ink">
@@ -506,16 +585,29 @@ function App() {
         </div>
       </header>
 
-      {proposals[0] && (
+      {top?.kind === "event" && (
         <ProposalCard
-          key={proposals[0].id}
-          proposal={proposals[0]}
-          total={proposals.length}
+          key={`e${top.p.id}`}
+          proposal={top.p}
+          total={queue.length}
           today={today}
           busy={proposalBusy}
-          onApprove={() => void approveProposal(proposals[0])}
-          onEdit={() => editProposal(proposals[0])}
-          onReject={() => void rejectProposal(proposals[0])}
+          onApprove={() => void approveProposal(top.p)}
+          onEdit={() => editProposal(top.p)}
+          onReject={() => void rejectProposal(top.p)}
+        />
+      )}
+      {top?.kind === "errand" && (
+        <ErrandProposalCard
+          key={`r${top.p.id}`}
+          proposal={top.p}
+          total={queue.length}
+          today={today}
+          nowMs={nowMs}
+          busy={proposalBusy}
+          onApprove={() => void approveErrandProposal(top.p)}
+          onEdit={() => editErrandProposal(top.p)}
+          onReject={() => void rejectErrandProposal(top.p)}
         />
       )}
 
@@ -601,6 +693,7 @@ function App() {
             errand={openSheetErrand}
             initial={errandSheet.draft}
             notice={errandSheet.notice}
+            proposal={errandSheet.proposalId !== undefined}
             onSave={saveErrand}
             onDelete={() => void removeErrand()}
             onRunNow={errandAction(() => errandApi.runNow(errandSheet.id as number))}

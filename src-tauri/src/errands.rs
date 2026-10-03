@@ -5,6 +5,10 @@
 //   · **바깥으로 나가는 문장은 `prompt` 하나**다. 사람이 쓰거나 사람이 승인한 것만 — AI 의 답(`runs.response`)은
 //     어디서도 `prompt` 가 되지 않는다(CLAUDE.md 불변 규칙). 지금 부탁을 만드는 길은 팝오버뿐이라 `approved_at` 은 만들 때 찍힌다.
 //     AI 가 낸 부탁(개발 6)은 NULL 로 들어와 사람이 승인하기 전엔 `due_errands` 에 안 잡힌다.
+//   · **AI 가 낸 부탁은 «제안»**(`errand_proposals`)으로만 들어온다. 부탁이 되는 길은 사람이 누르는 `approve_errand_proposal` 하나 —
+//     그때 `approved_at` 이 찍힌다. 고쳐서 승인하면 **사람이 본 글**이 저장된다(AI 가 보낸 글이 아니라). 깊이(`depth`) = 어느 실행의 답에서
+//     이어졌나(PLAN §9-4): 사람이 만든 부탁 0 → 그 답에서 이어진 제안 1 → … 최대 3. `from_run_id` 를 밝히지 않은 제안은 0 이다 — 정직한 AI 를
+//     위한 안전띠고, 진짜 문은 승인이다(모든 제안은 사람이 읽고 누른다).
 //   · 돌았는지는 `runs` 가 정한다. 부탁에 실행이 하나라도 있으면 예약 시각이 와도 다시 안 돈다(건너뜀도 한 줄 남긴다).
 //     «다시 실행» 은 예약과 무관한 수동 실행이다(`dispatch::Dispatcher::run_now`).
 //   · 한 부탁의 «지금 상태» 는 가장 최근 실행이다. 고치기·지우기는 상태가 «대기» 일 때만(돈 기록을 바꾸지 않는다).
@@ -12,7 +16,7 @@
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-use crate::store::{local_tz, now_ms, Store};
+use crate::store::{client_name, local_tz, now_ms, proposal_gone, Store, PROPOSAL_KEEP_MS};
 
 const PROMPT_MAX: usize = 4_000;
 const TITLE_CHARS: usize = 40;
@@ -464,6 +468,214 @@ impl Store {
     }
 }
 
+// ── AI 의 부탁 제안 ──────────────────────────────────────────
+
+/// 한꺼번에 기다릴 수 있는 부탁 제안 수. 카드마다 글을 읽어야 해서 일정 제안(20)보다 적게.
+const ERRAND_PENDING_MAX: i64 = 10;
+/// 답에서 답으로 이어질 수 있는 단계(PLAN §9-4).
+pub(crate) const DEPTH_MAX: i64 = 3;
+/// 제안 시각이 이보다 먼 미래면 거부(해를 잘못 쓴 제안이 조용히 묻히지 않게).
+const FAR_MS: i64 = 366 * 24 * 60 * 60 * 1000;
+/// 이만큼 넘게 지난 시각의 제안은 못 받는다 — 받으면 바로 «늦게 실행» 이거나 건너뜀이 된다. 사람이 때를 고쳐서 받는다.
+const PAST_MS: i64 = 60 * 1000;
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ErrandProposalInput {
+    pub errand: ErrandInput,
+    /// 어느 실행의 답에서 이어진 부탁인가(깊이 계산용).
+    pub from_run_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ErrandProposal {
+    pub id: i64,
+    pub client: String,
+    pub prompt: String,
+    pub start_at: i64,
+    pub allowed_tools: String,
+    pub late: String,
+    pub depth: i64,
+    pub parent_run_id: Option<i64>,
+    /// pending · approved · rejected · expired
+    pub status: String,
+    pub created_at: i64,
+    pub decided_at: Option<i64>,
+    pub errand_id: Option<i64>,
+}
+
+const EP_COLS: &str = "id, client, prompt, start_at, allowed_tools, late, depth, parent_run_id, status, created_at, decided_at, errand_id";
+
+fn row_to_ep(r: &rusqlite::Row) -> rusqlite::Result<ErrandProposal> {
+    Ok(ErrandProposal {
+        id: r.get(0)?,
+        client: r.get(1)?,
+        prompt: r.get(2)?,
+        start_at: r.get(3)?,
+        allowed_tools: r.get(4)?,
+        late: r.get(5)?,
+        depth: r.get(6)?,
+        parent_run_id: r.get(7)?,
+        status: r.get(8)?,
+        created_at: r.get(9)?,
+        decided_at: r.get(10)?,
+        errand_id: r.get(11)?,
+    })
+}
+
+fn expire_errand_proposals(conn: &rusqlite::Connection, now: i64) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE errand_proposals SET status = 'expired', decided_at = ?1 WHERE status = 'pending' AND created_at < ?2",
+        params![now, now - PROPOSAL_KEEP_MS],
+    )
+}
+
+impl Store {
+    /// AI 의 부탁 제안을 받아 둔다. 부탁이 되진 않는다 — 사람이 `approve_errand_proposal` 로 받아야 돈다.
+    /// 검사는 부탁과 같은 `validate`. 깊이가 한도를 넘으면 거절(사람이 직접 부탁으로 만들면 된다).
+    pub(crate) fn add_errand_proposal(&self, client: &str, input: &ErrandProposalInput) -> Result<ErrandProposal, String> {
+        let (prompt, _) = validate(&input.errand)?;
+        let now = now_ms();
+        if input.errand.start_at < now - PAST_MS {
+            return Err("시각이 이미 지났어요 — 지금 이후의 때로 제안해 주세요".into());
+        }
+        if input.errand.start_at > now + FAR_MS {
+            return Err("시각이 1년 넘게 멀어요 — 날짜를 다시 확인해 주세요".into());
+        }
+        let client = client_name(client);
+        let id = {
+            let conn = self.conn();
+            expire_errand_proposals(&conn, now).map_err(|e| e.to_string())?;
+            let pending: i64 = conn
+                .query_row("SELECT COUNT(*) FROM errand_proposals WHERE status = 'pending'", [], |r| r.get(0))
+                .map_err(|e| e.to_string())?;
+            if pending >= ERRAND_PENDING_MAX {
+                return Err("기다리는 부탁 제안이 너무 많아요 — 사람이 먼저 정리해야 해요".into());
+            }
+            let depth = match input.from_run_id {
+                None => 0,
+                Some(run) => {
+                    let parent: Option<i64> = conn
+                        .query_row(
+                            "SELECT e.depth FROM runs r JOIN errands e ON e.item_id = r.item_id WHERE r.id = ?1",
+                            [run],
+                            |r| r.get(0),
+                        )
+                        .optional()
+                        .map_err(|e| e.to_string())?;
+                    let d = parent.ok_or("from_run_id 가 가리키는 실행이 없어요")? + 1;
+                    if d > DEPTH_MAX {
+                        return Err(format!(
+                            "답에서 답으로 {DEPTH_MAX}번 이어진 부탁이에요 — 더 이어 가려면 사람이 직접 부탁을 만들어야 해요"
+                        ));
+                    }
+                    d
+                }
+            };
+            conn.execute(
+                "INSERT INTO errand_proposals (client, prompt, start_at, allowed_tools, late, parent_run_id, depth, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![client, prompt, input.errand.start_at, input.errand.allowed_tools, input.errand.late, input.from_run_id, depth, now],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.last_insert_rowid()
+        };
+        self.get_errand_proposal(id)?.ok_or_else(|| "방금 받은 제안을 못 찾았어요".into())
+    }
+
+    pub(crate) fn get_errand_proposal(&self, id: i64) -> Result<Option<ErrandProposal>, String> {
+        let conn = self.conn();
+        expire_errand_proposals(&conn, now_ms()).map_err(|e| e.to_string())?;
+        conn.query_row(&format!("SELECT {EP_COLS} FROM errand_proposals WHERE id = ?1"), [id], row_to_ep)
+            .optional()
+            .map_err(|e| e.to_string())
+    }
+
+    /// 기다리는 제안 — 오래된 순.
+    pub(crate) fn pending_errand_proposals(&self) -> Result<Vec<ErrandProposal>, String> {
+        let conn = self.conn();
+        expire_errand_proposals(&conn, now_ms()).map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(&format!("SELECT {EP_COLS} FROM errand_proposals WHERE status = 'pending' ORDER BY created_at, id"))
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], row_to_ep)
+            .and_then(|it| it.collect::<rusqlite::Result<Vec<_>>>())
+            .map_err(|e| e.to_string())?;
+        Ok(rows)
+    }
+
+    /// 사람이 제안을 승인한다 — 🔴 AI 가 낸 글이 **부탁이 되는 유일한 길**(소켓엔 이 문이 없다). 한 트랜잭션:
+    /// 상태 확인 → 부탁 만들기(`approved_at` = 지금) → 제안을 «받음» 으로. `edited` 가 있으면 그 값(사람이 본·고친 글)이 저장된다.
+    /// 그냥 승인인데 시각이 이미 지났으면 거절 — 오래 묵은 카드가 승인 즉시 «늦게 실행/건너뜀» 이 되지 않게(고쳐서 받는다).
+    pub(crate) fn approve_errand_proposal(&self, id: i64, edited: Option<&ErrandInput>) -> Result<Errand, String> {
+        let now = now_ms();
+        let errand_id = {
+            let mut conn = self.conn();
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            expire_errand_proposals(&tx, now).map_err(|e| e.to_string())?;
+            let p = tx
+                .query_row(&format!("SELECT {EP_COLS} FROM errand_proposals WHERE id = ?1"), [id], row_to_ep)
+                .optional()
+                .map_err(|e| e.to_string())?
+                .ok_or("없는 제안이에요")?;
+            if p.status != "pending" {
+                return Err(proposal_gone(&p.status).into());
+            }
+            let input = match edited {
+                Some(e) => e.clone(),
+                None => {
+                    if p.start_at < now - PAST_MS {
+                        return Err("제안한 때가 이미 지났어요 — «고치기» 로 새 때를 정해 주세요".into());
+                    }
+                    ErrandInput { prompt: p.prompt.clone(), start_at: p.start_at, allowed_tools: p.allowed_tools.clone(), late: p.late.clone() }
+                }
+            };
+            let (prompt, title) = validate(&input)?;
+            tx.execute(
+                "INSERT INTO items (kind, title, all_day, start_at, end_at, tz, origin, created_at, updated_at)
+                 VALUES ('errand', ?1, 0, ?2, ?2, ?3, 'mcp', ?4, ?4)",
+                params![title, input.start_at, local_tz(), now],
+            )
+            .map_err(|e| e.to_string())?;
+            let errand_id = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT INTO errands (item_id, target, prompt, allowed_tools, late, approved_at, parent_run_id, depth)
+                 VALUES (?1, 'claude', ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![errand_id, prompt, input.allowed_tools, input.late, now, p.parent_run_id, p.depth],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.execute(
+                "UPDATE errand_proposals SET status = 'approved', decided_at = ?2, errand_id = ?3 WHERE id = ?1",
+                params![id, now, errand_id],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.commit().map_err(|e| e.to_string())?;
+            errand_id
+        };
+        self.get_errand(errand_id)?.ok_or_else(|| "방금 만든 부탁을 못 찾았어요".into())
+    }
+
+    pub(crate) fn reject_errand_proposal(&self, id: i64) -> Result<(), String> {
+        let now = now_ms();
+        let conn = self.conn();
+        let n = conn
+            .execute(
+                "UPDATE errand_proposals SET status = 'rejected', decided_at = ?2 WHERE id = ?1 AND status = 'pending'",
+                params![id, now],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            let status: Option<String> = conn
+                .query_row("SELECT status FROM errand_proposals WHERE id = ?1", [id], |r| r.get(0))
+                .optional()
+                .map_err(|e| e.to_string())?;
+            return Err(status.map_or("없는 제안이에요", |s| proposal_gone(&s)).into());
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -604,5 +816,113 @@ mod tests {
         assert_eq!(r.status, "failed");
         assert!(r.finished_at.is_some());
         assert_eq!(s.runs_since(0).unwrap(), 1);
+    }
+
+    fn prop(prompt: &str, at: i64, from: Option<i64>) -> ErrandProposalInput {
+        ErrandProposalInput { errand: input(prompt, at), from_run_id: from }
+    }
+    fn soon() -> i64 {
+        now_ms() + 3_600_000
+    }
+
+    #[test]
+    fn proposal_never_runs_until_a_human_approves() {
+        let s = Store::open_in_memory();
+        let p = s.add_errand_proposal("claude-code", &prop("어제 커밋 정리", soon(), None)).unwrap();
+        assert_eq!((p.status.as_str(), p.depth), ("pending", 0));
+        assert!(s.list_errands(0, i64::MAX).unwrap().is_empty(), "제안만으론 부탁이 없다");
+        assert!(s.due_errands(i64::MAX).unwrap().is_empty(), "제안은 안 돈다");
+        assert_eq!(s.pending_errand_proposals().unwrap().len(), 1);
+        let e = s.approve_errand_proposal(p.id, None).unwrap();
+        assert!(e.approved && e.run.is_none());
+        assert_eq!(s.due_errands(i64::MAX).unwrap().len(), 1, "승인된 뒤에야 돌 차례가 된다");
+        let origin: String = s.conn().query_row("SELECT origin FROM items WHERE id = ?1", [e.id], |r| r.get(0)).unwrap();
+        assert_eq!(origin, "mcp");
+        assert!(s.approve_errand_proposal(p.id, None).is_err(), "두 번 눌러도 부탁은 하나");
+        assert!(s.reject_errand_proposal(p.id).is_err());
+        assert_eq!(s.list_errands(0, i64::MAX).unwrap().len(), 1);
+        assert_eq!(s.get_errand_proposal(p.id).unwrap().unwrap().errand_id, Some(e.id));
+    }
+
+    #[test]
+    fn edited_approval_stores_what_the_human_saw() {
+        let s = Store::open_in_memory();
+        let p = s.add_errand_proposal("x", &prop("AI 가 쓴 글", soon(), None)).unwrap();
+        let mut mine = input("내가 고친 글", soon() + 1_000);
+        mine.allowed_tools = "WebSearch".into();
+        let e = s.approve_errand_proposal(p.id, Some(&mine)).unwrap();
+        assert_eq!((e.prompt.as_str(), e.allowed_tools.as_str()), ("내가 고친 글", "WebSearch"));
+        // 검사에 걸리면 제안은 그대로 기다린다.
+        let q = s.add_errand_proposal("x", &prop("b", soon(), None)).unwrap();
+        assert!(s.approve_errand_proposal(q.id, Some(&input("  ", 1))).is_err());
+        assert_eq!(s.get_errand_proposal(q.id).unwrap().unwrap().status, "pending");
+        s.reject_errand_proposal(q.id).unwrap();
+        assert!(s.approve_errand_proposal(q.id, None).is_err());
+        assert!(s.pending_errand_proposals().unwrap().is_empty());
+    }
+
+    #[test]
+    fn proposal_checks_input_time_and_caps() {
+        let s = Store::open_in_memory();
+        assert!(s.add_errand_proposal("x", &prop("  ", soon(), None)).is_err());
+        assert!(s.add_errand_proposal("x", &prop("a", now_ms() - 3_600_000, None)).is_err(), "지난 시각");
+        assert!(s.add_errand_proposal("x", &prop("a", now_ms() + FAR_MS + 86_400_000, None)).is_err(), "너무 먼 시각");
+        let mut bad = prop("a", soon(), None);
+        bad.errand.allowed_tools = "Bash".into();
+        assert!(s.add_errand_proposal("x", &bad).is_err());
+        for i in 0..ERRAND_PENDING_MAX {
+            s.add_errand_proposal("x", &prop(&format!("p{i}"), soon(), None)).unwrap();
+        }
+        assert!(s.add_errand_proposal("x", &prop("넘침", soon(), None)).is_err());
+        // 한 주 지난 제안은 만료 → 자리가 나고, 받을 수도 없다.
+        s.conn().execute("UPDATE errand_proposals SET created_at = 0 WHERE prompt = 'p0'", []).unwrap();
+        assert_eq!(s.pending_errand_proposals().unwrap().len() as i64, ERRAND_PENDING_MAX - 1);
+        assert!(s.approve_errand_proposal(1, None).is_err());
+        s.add_errand_proposal("x", &prop("자리가 났다", soon(), None)).unwrap();
+    }
+
+    #[test]
+    fn stale_proposal_needs_a_new_time_to_be_approved() {
+        let s = Store::open_in_memory();
+        let p = s.add_errand_proposal("x", &prop("a", soon(), None)).unwrap();
+        // 카드가 묵는 사이 제안한 때가 지났다.
+        s.conn().execute("UPDATE errand_proposals SET start_at = ?1 WHERE id = ?2", params![now_ms() - 3_600_000, p.id]).unwrap();
+        assert!(s.approve_errand_proposal(p.id, None).is_err());
+        assert_eq!(s.get_errand_proposal(p.id).unwrap().unwrap().status, "pending");
+        s.approve_errand_proposal(p.id, Some(&input("a", soon()))).unwrap();
+    }
+
+    #[test]
+    fn chain_depth_is_limited_to_three() {
+        let s = Store::open_in_memory();
+        // 사람이 만든 부탁(깊이 0)이 돌았다.
+        let mut e = s.create_errand(&input("뿌리", 1_000)).unwrap();
+        let mut run = s.begin_run(e.id, "뿌리", 0, None).unwrap();
+        for want in 1..=DEPTH_MAX {
+            let p = s.add_errand_proposal("x", &prop(&format!("{want}단계"), soon(), Some(run))).unwrap();
+            assert_eq!(p.depth, want);
+            e = s.approve_errand_proposal(p.id, None).unwrap();
+            run = s.begin_run(e.id, &e.prompt, 0, None).unwrap();
+        }
+        let err = s.add_errand_proposal("x", &prop("4단계", soon(), Some(run))).unwrap_err();
+        assert!(err.contains("3번"), "{err}");
+        assert!(s.add_errand_proposal("x", &prop("없는 실행", soon(), Some(9_999))).is_err());
+        // 답을 안 밝힌 제안은 0 단계 — 그래도 사람 승인은 필요하다.
+        assert_eq!(s.add_errand_proposal("x", &prop("새 뿌리", soon(), None)).unwrap().depth, 0);
+    }
+
+    #[test]
+    fn schema_5_db_upgrades_keeping_errands() {
+        // 개발 5 사용자의 DB(스키마 4)가 개발 6 앱에서 열린다.
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let conn = rusqlite::Connection::open(dir.path().join("ouro.db")).unwrap();
+            let n = crate::store::MIGRATIONS.len() - 1;
+            for (i, sql) in crate::store::MIGRATIONS.iter().take(n).enumerate() {
+                conn.execute_batch(&format!("BEGIN; {sql}; PRAGMA user_version = {}; COMMIT;", i + 1)).unwrap();
+            }
+        }
+        let s = Store::open(dir.path()).unwrap();
+        s.add_errand_proposal("x", &prop("a", soon(), None)).unwrap();
     }
 }

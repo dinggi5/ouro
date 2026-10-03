@@ -4,9 +4,11 @@
 // 판단(검사·시각 계산·비공개 거르기)은 전부 이쪽에 있고 사이드카는 옮겨 주기만 한다 — 그래서 테스트도 여기서 한다(`handle`).
 //
 // 설계 결정:
-//   · **승인 문이 없다.** 소켓이 받는 일은 읽기(agenda·free_time), 제안 넣기(propose), 제안 상태 보기(proposal) 넷뿐이다.
-//     제안을 일정으로 만드는 건 팝오버의 `approve_proposal` 커맨드 하나 — AI 가 자기 제안을 스스로 받을 길이 원리상 없다.
-//     (CLAUDE.md «AI 가 만든 부탁은 사람 승인 전엔 안 돈다» 를 일정 제안에도 그대로.)
+//   · **승인 문이 없다.** 소켓이 받는 일은 읽기(agenda·free_time), 제안 넣기(propose·propose_errand), 제안 상태 보기(proposal·errand_proposal) 여섯뿐이다.
+//     제안을 일정·부탁으로 만드는 건 팝오버의 `approve_proposal`·`approve_errand_proposal` 커맨드 하나씩 — AI 가 자기 제안을 스스로 받을 길이 원리상 없다.
+//     (CLAUDE.md «AI 가 만든 부탁은 사람 승인 전엔 안 돈다» — 부탁 제안은 그 규칙 그대로, 일정 제안도 같은 모양.)
+//   · **부탁 제안의 답엔 내용이 안 돌아간다.** 승인된 뒤엔 상태(`run_status`)와 실행 번호만 — 답 본문은 안 준다. 제안 번호는 순서대로라 다른 AI 가
+//     짐작해 물을 수 있고, 사람이 고쳐서 받은 글·돌아온 답이 그 문으로 새면 안 된다(개발 4 코덱스가 일정에서 짚은 것과 같은 이유).
 //   · **시각은 로컬 벽시계 글자**(`2026-10-02T15:00`)로 주고받는다. AI 가 UTC ms 를 셈하게 두면 시간대·서머타임에서 틀린다.
 //     글자 → 순간 변환은 여기서 결정적으로 한다(CLAUDE.md «날짜 계산은 LLM 이 아니라 결정적 파서가»). 없는 시각(서머타임 틈)은 거부.
 //     답마다 `now`(요일 포함)를 싣는다 — «금요일» 을 날짜로 바꾸는 건 AI 지만, 오늘이 무슨 요일인지는 이 답이 정본이다.
@@ -26,6 +28,7 @@ use chrono::{DateTime, Datelike, Days, Local, NaiveDate, NaiveDateTime, NaiveTim
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::errands::{ErrandInput, ErrandProposal, ErrandProposalInput, TOOL_CHOICES};
 use crate::store::{self, Event, EventInput, Proposal, Store};
 
 /// 요청 한 줄 상한. 제목·메모 상한(store.rs)보다 넉넉하되 거대한 글은 읽지도 않는다.
@@ -188,7 +191,7 @@ fn serve_one(conn: UnixStream, store: &Store, presence: &Presence, on_change: &O
                     on_change(Change::Presence);
                 }
             }
-            let proposed = req.op == "propose";
+            let proposed = matches!(req.op.as_str(), "propose" | "propose_errand");
             match handle(store, &req, Local::now()) {
                 Ok(data) => (json!({ "ok": true, "data": data }), proposed),
                 Err(e) => (json!({ "ok": false, "error": e }), false),
@@ -227,6 +230,15 @@ fn handle(store: &Store, req: &Request, now_at: DateTime<Local>) -> Result<Value
             let id = req.args.get("id").and_then(Value::as_i64).ok_or("id 가 필요해요")?;
             let p = store.get_proposal(id)?.ok_or("없는 제안이에요")?;
             proposal_status_json(store, &p)?
+        }
+        "propose_errand" => {
+            let p = store.add_errand_proposal(&req.client, &errand_proposal_input(&req.args)?)?;
+            errand_proposal_json(store, &p)?
+        }
+        "errand_proposal" => {
+            let id = req.args.get("id").and_then(Value::as_i64).ok_or("id 가 필요해요")?;
+            let p = store.get_errand_proposal(id)?.ok_or("없는 제안이에요")?;
+            errand_proposal_json(store, &p)?
         }
         // 연결 표시용 — 소식은 serve_one 이 이미 적었다.
         "hello" | "bye" => json!({}),
@@ -521,6 +533,59 @@ fn proposal_status_json(store: &Store, p: &Proposal) -> Result<Value, String> {
     Ok(out)
 }
 
+/// `propose_errand` 인자 → 부탁 제안. 시각은 일정 제안과 같은 로컬 벽시계 글자(`start`)다.
+fn errand_proposal_input(args: &Value) -> Result<ErrandProposalInput, String> {
+    let prompt = args.get("prompt").and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty()).ok_or("prompt 가 필요해요")?;
+    let start = args.get("start").and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty()).ok_or("start 가 필요해요")?;
+    if start.len() == 10 {
+        return Err("start 는 시각이 있어야 해요(YYYY-MM-DDTHH:MM) — 날짜만으론 언제 돌지 몰라요".into());
+    }
+    let start_at = local_ms(parse_local(start)?)?;
+    let allowed_tools = match args.get("allow_web_search") {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => "",
+        Some(Value::Bool(true)) => "WebSearch",
+        Some(_) => return Err("allow_web_search 는 true/false 예요".into()),
+    };
+    debug_assert!(TOOL_CHOICES.contains(&allowed_tools));
+    let late = match args.get("if_missed").and_then(Value::as_str) {
+        None | Some("run") => "run",
+        Some("skip") => "skip",
+        Some(_) => return Err("if_missed 는 run 또는 skip 이에요".into()),
+    };
+    let from_run_id = match args.get("from_run_id") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(v.as_i64().ok_or("from_run_id 는 숫자예요")?),
+    };
+    Ok(ErrandProposalInput {
+        errand: ErrandInput { prompt: prompt.to_string(), start_at, allowed_tools: allowed_tools.into(), late: late.into() },
+        from_run_id,
+    })
+}
+
+/// 부탁 제안의 답. 기다리는·거절·만료는 AI 가 보낸 그대로를 보여 주고, **받은 뒤엔 내용 없이 상태만** — 머리 주석.
+fn errand_proposal_json(store: &Store, p: &ErrandProposal) -> Result<Value, String> {
+    let mut out = json!({ "proposal_id": p.id, "status": p.status, "depth": p.depth });
+    if p.status != "approved" {
+        out["errand"] = json!({
+            "prompt": p.prompt,
+            "start": fmt_ms(p.start_at),
+            "weekday": weekday(ms_date(p.start_at)),
+            "allow_web_search": p.allowed_tools == "WebSearch",
+            "if_missed": p.late,
+        });
+        return Ok(out);
+    }
+    // 사람이 지웠으면 부탁은 없다 — 상태만 «approved».
+    if let Some(e) = p.errand_id.map(|id| store.get_errand(id)).transpose()?.flatten() {
+        out["errand_id"] = json!(e.id);
+        out["run_status"] = json!(e.run.as_ref().map_or("waiting", |r| r.status.as_str()));
+        if let Some(r) = &e.run {
+            out["run_id"] = json!(r.id);
+        }
+    }
+    Ok(out)
+}
+
 /// 제안과 겹치는 (AI 에게 보여도 되는) 일정 제목. 비공개는 «비공개 일정» 으로만.
 pub(crate) fn conflicts(store: &Store, e: &EventInput, skip: Option<i64>) -> Result<Vec<String>, String> {
     let (from, to) = match (e.start_at, e.end_at, e.start_date.as_deref(), e.end_date.as_deref()) {
@@ -625,6 +690,73 @@ mod tests {
         let q = handle(&s, &req("proposal", json!({"id": id})), now()).unwrap();
         assert_eq!(q["status"], "approved");
         assert!(q["event_id"].is_i64());
+    }
+
+    /// 지금부터 이틀 뒤 09:00 (로컬 글자, 요일) — 실제 시계 기준이라 «지난 시각»·«1년 넘게» 검사에 안 걸린다.
+    fn soon_local() -> (String, &'static str) {
+        let d = Local::now().date_naive().checked_add_days(Days::new(2)).unwrap();
+        (format!("{}T09:00", d.format("%Y-%m-%d")), weekday(d))
+    }
+
+    #[test]
+    fn errand_proposal_only_proposes_and_status_has_no_content() {
+        let s = Store::open_in_memory();
+        let (when, wd) = soon_local();
+        let args = json!({"prompt":"어제 커밋 정리해 줘","start":when,"allow_web_search":true,"if_missed":"skip"});
+        let p = handle(&s, &req("propose_errand", args), now()).unwrap();
+        assert_eq!(p["status"], "pending");
+        assert_eq!(p["errand"]["start"], when.as_str());
+        assert_eq!(p["errand"]["weekday"], wd);
+        assert_eq!((p["errand"]["allow_web_search"].clone(), p["errand"]["if_missed"].clone()), (json!(true), json!("skip")));
+        assert!(s.list_errands(0, i64::MAX).unwrap().is_empty(), "부탁은 늘지 않았다");
+        assert!(s.due_errands(i64::MAX).unwrap().is_empty());
+        let id = p["proposal_id"].as_i64().unwrap();
+        // 소켓엔 승인 문이 없다.
+        for op in ["approve_errand", "approve_errand_proposal", "run_errand", "create_errand", "delete_errand"] {
+            assert!(handle(&s, &req(op, json!({"id": id})), now()).is_err(), "{op}");
+        }
+        // 사람이 고쳐서 받았다 — AI 가 받는 답엔 글도 답도 없다.
+        let mine = ErrandInput { prompt: "비밀 내용".into(), start_at: crate::store::now_ms() + 60_000, allowed_tools: String::new(), late: "run".into() };
+        let e = s.approve_errand_proposal(id, Some(&mine)).unwrap();
+        let q = handle(&s, &req("errand_proposal", json!({"id": id})), now()).unwrap();
+        assert_eq!((q["status"].clone(), q["run_status"].clone()), (json!("approved"), json!("waiting")));
+        assert!(q.get("errand").is_none() && !q.to_string().contains("비밀"), "{q}");
+        let run = s.begin_run(e.id, "비밀 내용", 0, None).unwrap();
+        let q = handle(&s, &req("errand_proposal", json!({"id": id})), now()).unwrap();
+        assert_eq!((q["run_status"].clone(), q["run_id"].clone()), (json!("running"), json!(run)));
+        // 사람이 부탁을 지우면 상태만.
+        s.delete_errand(e.id).ok();
+        s.finish_run(run, &crate::errands::Outcome { status: "done", exit_code: Some(0), response: Some("답".into()), stderr: None, session_id: None }).unwrap();
+        s.delete_errand(e.id).unwrap();
+        let q = handle(&s, &req("errand_proposal", json!({"id": id})), now()).unwrap();
+        assert!(q.get("run_status").is_none() && !q.to_string().contains("답\""), "{q}");
+    }
+
+    #[test]
+    fn errand_proposal_rejects_bad_args() {
+        let s = Store::open_in_memory();
+        let when = soon_local().0;
+        let ok = || json!({"prompt":"안녕","start":when});
+        let with = |k: &str, v: Value| {
+            let mut a = ok();
+            a[k] = v;
+            a
+        };
+        assert!(handle(&s, &req("propose_errand", ok()), now()).is_ok());
+        for bad in [
+            json!({"start":when}),
+            json!({"prompt":"  ","start":when}),
+            json!({"prompt":"안녕"}),
+            with("start", json!(&when[..10])),
+            with("start", json!(format!("{when}Z"))),
+            with("start", json!("2000-01-02T09:00")),
+            with("allow_web_search", json!("yes")),
+            with("if_missed", json!("later")),
+            with("from_run_id", json!("x")),
+            with("from_run_id", json!(12345)),
+        ] {
+            assert!(handle(&s, &req("propose_errand", bad.clone()), now()).is_err(), "{bad}");
+        }
     }
 
     #[test]

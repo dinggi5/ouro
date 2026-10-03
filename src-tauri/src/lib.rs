@@ -21,7 +21,7 @@ mod tray;
 
 use std::sync::Arc;
 
-use errands::{Errand, ErrandInput};
+use errands::{Errand, ErrandInput, ErrandProposal};
 use parse::{Draft, Engine, Miss};
 use serde::Serialize;
 use store::{Event, EventInput, Proposal, Store};
@@ -84,7 +84,7 @@ fn list_errands(state: State<'_, CoreState>, from: i64, to: i64) -> Result<Vec<E
     core(&state)?.store.list_errands(from, to)
 }
 
-/// 사람이 쓴 부탁을 만든다. 🔴 지금 부탁이 생기는 길은 이것뿐이다 — 문장은 사람이 쓴 것(AI 답·일정 글이 아니다).
+/// 사람이 쓴 부탁을 만든다. 🔴 문장은 사람이 쓴 것(AI 답·일정 글이 아니다) — AI 가 낸 부탁은 `approve_errand_proposal` 로만 들어온다.
 #[tauri::command]
 fn create_errand(state: State<'_, CoreState>, input: ErrandInput) -> Result<Errand, String> {
     let c = core(&state)?;
@@ -232,6 +232,26 @@ fn reject_proposal(state: State<'_, CoreState>, id: i64) -> Result<(), String> {
     core(&state)?.store.reject_proposal(id)
 }
 
+#[tauri::command]
+fn list_errand_proposals(state: State<'_, CoreState>) -> Result<Vec<ErrandProposal>, String> {
+    core(&state)?.store.pending_errand_proposals()
+}
+
+/// 사람이 부탁 제안을 승인한다(팝오버의 «승인»·«고쳐서 승인»). 🔴 AI 가 낸 글이 부탁이 되는 **유일한** 길 — 소켓엔 이 문이 없다(mcp.rs).
+/// 승인된 부탁은 때가 되면 돈다 — 디스패처를 깨워 다음 예약 시각을 다시 보게 한다.
+#[tauri::command]
+fn approve_errand_proposal(state: State<'_, CoreState>, id: i64, input: Option<ErrandInput>) -> Result<Errand, String> {
+    let c = core(&state)?;
+    let e = c.store.approve_errand_proposal(id, input.as_ref())?;
+    c.dispatcher.poke();
+    Ok(e)
+}
+
+#[tauri::command]
+fn reject_errand_proposal(state: State<'_, CoreState>, id: i64) -> Result<(), String> {
+    core(&state)?.store.reject_errand_proposal(id)
+}
+
 /// 소켓을 연다. 새 제안이 오면 팝오버를 띄우고 화면에 알린다(떠 있던 팝오버는 focus 이벤트가 안 오니 이벤트로).
 /// 못 열어도 앱은 돈다 — 캘린더는 쓸 수 있고, MCP 쪽은 «앱을 켜 주세요» 로 답한다.
 fn start_socket(app: &tauri::AppHandle) {
@@ -318,6 +338,9 @@ pub fn run() {
             list_proposals,
             approve_proposal,
             reject_proposal,
+            list_errand_proposals,
+            approve_errand_proposal,
+            reject_errand_proposal,
             mcp_clients
         ])
         .build(tauri::generate_context!())
