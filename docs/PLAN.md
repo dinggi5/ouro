@@ -194,7 +194,9 @@ MCP 명세 <https://modelcontextprotocol.io/specification>, iCalendar RRULE RFC 
 | 5 | 부탁 모델 + 디스패처(Claude) + 답 표시 — **완료** | 예약 부탁이 돌고 답이 캘린더에 |
 | 6 | MCP 제안 도구 + 승인 카드 + 순환 제한 — **완료** | Claude 가 제안 → 내가 승인 → 실행 |
 | 7 | Codex·반복·이어서 부탁·브리핑 — **완료** (반복은 부탁만, 일정 반복은 뒤로) | Codex 부탁이 돌고, 매일 부탁이 지난 대화를 이어 돈다 |
-| 8 | 서명·업데이트·배포·.mcpb | brew 설치 |
+| 8 | 서명·업데이트·배포·.mcpb **+ 고유 id(UUID) 준비** | brew 설치. 모든 일정·부탁·실행에 기기와 무관한 `uid` |
+| 9 | 동기화 코어: Swift `CKSyncEngine` 패키지 + 맥 연결(Tauri 옆 헬퍼) + «실행 맥» 지정 | 맥 두 대(또는 맥+시뮬레이터)에서 일정이 오간다 |
+| 10~ | iOS 앱 **SwiftUI 네이티브** — 보기·쓰기·부탁 걸기·답 읽기·AI 제안 승인 → TestFlight → App Store | 폰에서 만든 일정이 맥에 뜨고, 폰에서 건 부탁을 맥이 돌려 답이 폰으로 |
 | 나중 | 로컬 엔진 — **사장이 정할 때만** | §7 «못 알아들은 입력» 숫자를 보고 판단 |
 
 ## 13. 확정된 결정 (개발 0, 사장)
@@ -209,4 +211,7 @@ MCP 명세 <https://modelcontextprotocol.io/specification>, iCalendar RRULE RFC 
 | 부탁 대상 순서 | **Claude Code 먼저**(개발 5), Codex 는 v0.2(개발 7) | 디스패처를 처음부터 «대상» 추상화로 짜서 Codex 는 갈래 하나 추가로 끝나게 |
 | 로컬 AI | **MVP 에서 뺌** | 빠른 입력은 규칙 파서. 필요하면 사장이 정해서 나중에 넣는다(§7) |
 | 플랫폼 (개발 3) | **맥 먼저 출시, 그다음 iOS** | iOS 로 가면 기기 간 동기화가 필요해진다 — §2-③ «동기화 없음» 은 맥 단독일 때의 결정. 그때 다시 정한다 |
+| 맥·iOS 동기화 (개발 7 뒤, 사장) | **맥·iOS 둘 다 출시, iCloud 로 연동.** 길은 **CloudKit 개인 DB + `CKSyncEngine`**(iOS 17·macOS 14+). 제목·메모·부탁 글·답은 `CKRecord.encryptedValues`(종단간 암호화) | §2-③ «동기화 없음» 을 대체한다. 약속 문구는 «이 맥에만» → «내 기기와 내 iCloud 에만, 종단간 암호화». SQLite 파일을 iCloud Drive 에 두는 길·EventKit 저장은 안 한다. 실행(`claude`·`codex`)·MCP 는 **맥만** — 폰에서 건 부탁은 «실행 맥» 이 돌리고 답이 동기화된다(맥이 둘이면 하나 지정, 이중 실행 방지). 폰도 AI 제안을 승인할 수 있다. Developer ID 배포 맥 앱의 CloudKit entitlement 는 개발 9 시작 때 실물 확인 |
+| iOS 앱 스택 (개발 7 뒤, 사장) | **B: SwiftUI 네이티브** | 동기화 코어가 어차피 Swift 라 Swift 패키지 하나를 맥(헬퍼)·iOS 가 같이 쓴다. 위젯·잠금화면·알림·제스처 품질이 폰 캘린더의 본체. 맥은 Tauri 유지 |
+| 고유 id (개발 7 뒤, 사장) | **개발 8 에 넣는다** | 지금 id 는 기기마다 1,2,3… 라 동기화 때 겹친다. 공개 출시 전에 `uid`(UUID) 를 붙여야 사용자 DB 이전이 한 번에 끝난다. `deleted_at`(휴지통)·`updated_at` 은 이미 있다 |
 | 백업 (개발 3) | **iCloud 로 묶을 예정** | 사용자 자신의 iCloud 라 «우리 서버 없음» 원칙과는 맞는다. 단 **살아 있는 `ouro.db` 를 iCloud Drive 폴더에 두지 않는다** — SQLite(WAL) 파일을 iCloud 가 반쯤 올리거나 두 기기가 동시에 쓰면 깨진다. 매일 스냅숏(`VACUUM INTO`, 한 파일짜리 온전한 DB)만 iCloud Drive 로 복사하는 게 안전한 첫걸음. iOS 동기화는 그 뒤 CloudKit 같은 정식 길로 |
