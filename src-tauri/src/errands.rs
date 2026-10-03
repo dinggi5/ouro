@@ -124,8 +124,10 @@ pub(crate) struct Errand {
     pub series: bool,
     pub carry: bool,
     pub resume_run_id: Option<i64>,
-    /// 잇는 대화의 원래 부탁 제목 — 시트가 «… 에 이어서» 로 보인다.
+    /// 잇는 대화의 원래 부탁 제목 — 시트가 «… 에 이어서» 로 보인다(부모가 영구히 지워졌으면 None).
     pub resume_title: Option<String>,
+    /// 앞 대화를 잇는 부탁이다(만들 때 베낀 대화 번호가 있다) — 부모가 지워져도 참. 받는 쪽·반복을 못 바꾼다.
+    pub resumes: bool,
     /// 가장 최근 실행. 없으면 «대기».
     pub run: Option<RunView>,
 }
@@ -286,7 +288,8 @@ const LIST_SQL: &str = "
            r.id, r.status, r.started_at, r.finished_at, r.late_ms, r.sent_text, r.response, r.stderr, r.read_at,
            r.resumed_session, r.session_id,
            COALESCE(i.rrule, ''), e.series_id, e.carry, e.resume_run_id,
-           (SELECT pi.title FROM runs pr JOIN items pi ON pi.id = pr.item_id WHERE pr.id = e.resume_run_id)
+           (SELECT pi.title FROM runs pr JOIN items pi ON pi.id = pr.item_id WHERE pr.id = e.resume_run_id),
+           e.resume_session IS NOT NULL
     FROM items i
     JOIN errands e ON e.item_id = i.id
     LEFT JOIN runs r ON r.id = (SELECT MAX(id) FROM runs WHERE item_id = i.id)
@@ -326,6 +329,7 @@ fn row_to_errand(r: &rusqlite::Row) -> rusqlite::Result<Errand> {
         carry: r.get(21)?,
         resume_run_id: r.get(22)?,
         resume_title: r.get(23)?,
+        resumes: r.get(24)?,
         run,
     })
 }
@@ -1378,7 +1382,8 @@ mod tests {
         // 부모가 휴지통 비우기로 사라져도(실행 CASCADE → resume_run_id NULL) 대화 번호는 남는다 — 조용히 새 대화로 돌지 않는다.
         let g = s.create_errand(&follow).unwrap();
         s.conn().execute("DELETE FROM items WHERE id = ?1", [p.id]).unwrap();
-        assert_eq!(s.get_errand(g.id).unwrap().unwrap().resume_run_id, None);
+        let gone = s.get_errand(g.id).unwrap().unwrap();
+        assert_eq!((gone.resume_run_id, gone.resumes), (None, true), "부모가 없어도 «이어서» 로 보인다");
         s.conn().execute("UPDATE items SET start_at = ?1 WHERE id = ?2", params![now_ms() - 1, g.id]).unwrap();
         let (_, d, _) = s.claim_run(g.id, Claim::Scheduled, |_, _| None).unwrap().unwrap();
         assert_eq!(d.session.as_deref(), Some("abc-123"));

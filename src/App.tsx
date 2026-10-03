@@ -479,7 +479,7 @@ function App() {
   /** 답 시트의 «이어서 부탁» — 그 답의 대화를 잇는 새 부탁. 때는 «지금»(그대로 만들면 바로 돈다). */
   const followUp = (e: Errand) => {
     if (!e.run) return;
-    const draft = { ...blankErrandDraft(new Date(), e.target), resumeRunId: e.run.id, resumeTitle: e.title };
+    const draft = { ...blankErrandDraft(new Date(), e.target), resumeRunId: e.run.id, resumeTitle: e.title, resumes: true };
     setErrandSheet({ id: null, draft, key: ++sheetKey.current, notice: ["때를 그대로 두면 만들자마자 돌아요."] });
   };
 

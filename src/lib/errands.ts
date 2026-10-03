@@ -45,8 +45,10 @@ export type Errand = {
   /** 반복할 때 지난 대화를 잇는다. */
   carry: boolean;
   resumeRunId: number | null;
-  /** 잇는 대화의 원래 부탁 제목. */
+  /** 잇는 대화의 원래 부탁 제목(부모가 영구히 지워졌으면 null). */
   resumeTitle: string | null;
+  /** 앞 대화를 잇는 부탁이다 — 부모가 지워져도 참. */
+  resumes: boolean;
   run: Run | null;
 };
 

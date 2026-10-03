@@ -34,6 +34,8 @@ export type ErrandDraft = {
   /** «이어서 부탁» — 잇는 실행과 그 부탁 제목. 만들 때만 정해진다. */
   resumeRunId: number | null;
   resumeTitle: string | null;
+  /** 앞 대화를 잇는다 — 받는 쪽·반복 잠금과 안내는 이것으로 본다(부모가 지워져 resumeRunId 가 null 이어도 참). */
+  resumes: boolean;
 };
 
 export function blankErrandDraft(at: Date, target: Target = "claude"): ErrandDraft {
@@ -48,10 +50,11 @@ export function blankErrandDraft(at: Date, target: Target = "claude"): ErrandDra
     carry: false,
     resumeRunId: null,
     resumeTitle: null,
+    resumes: false,
   };
 }
 
-export function errandInputToDraft(e: ErrandInput, resumeTitle: string | null = null): ErrandDraft {
+export function errandInputToDraft(e: ErrandInput, resumeTitle: string | null = null, resumes = e.resumeRunId !== null): ErrandDraft {
   const d = new Date(e.startAt);
   return {
     prompt: e.prompt,
@@ -64,10 +67,11 @@ export function errandInputToDraft(e: ErrandInput, resumeTitle: string | null = 
     carry: e.carry,
     resumeRunId: e.resumeRunId,
     resumeTitle,
+    resumes,
   };
 }
 
-export const errandToDraft = (e: Errand): ErrandDraft => errandInputToDraft(e, e.resumeTitle);
+export const errandToDraft = (e: Errand): ErrandDraft => errandInputToDraft(e, e.resumeTitle, e.resumes);
 
 function toInput(d: ErrandDraft): ErrandInput | string {
   if (!d.prompt.trim()) return "부탁할 말을 적어 주세요";
@@ -79,8 +83,8 @@ function toInput(d: ErrandDraft): ErrandInput | string {
     allowedTools: d.allowedTools,
     late: d.late,
     target: d.target,
-    repeat: d.resumeRunId === null ? d.repeat : "",
-    carry: d.repeat !== "" && d.resumeRunId === null && d.carry,
+    repeat: d.resumes ? "" : d.repeat,
+    carry: d.repeat !== "" && !d.resumes && d.carry,
     resumeRunId: d.resumeRunId,
   };
 }
@@ -263,7 +267,7 @@ export function ErrandSheet({
             {n}
           </p>
         ))}
-        {d.resumeRunId !== null && (
+        {d.resumes && (
           <p className="text-caption text-accent">
             «{d.resumeTitle ?? "앞 부탁"}» 의 대화에 이어서 — {targetLabel(d.target)} 가 앞 대화를 기억해요.
           </p>
@@ -286,7 +290,7 @@ export function ErrandSheet({
           <span className="text-caption text-ink-muted">누구</span>
           <select
             value={d.target}
-            disabled={d.resumeRunId !== null}
+            disabled={d.resumes}
             onChange={(e) => set({ target: e.target.value as Target })}
             className={`${field} disabled:opacity-60`}
           >
@@ -304,7 +308,7 @@ export function ErrandSheet({
           <input type="time" value={d.time} onChange={(e) => set({ time: e.target.value })} className={`${field} num`} />
         </div>
 
-        {d.resumeRunId === null && (
+        {!d.resumes && (
           <label className="grid grid-cols-[2.5rem_1fr] items-center gap-2">
             <span className="text-caption text-ink-muted">반복</span>
             <select value={d.repeat} onChange={(e) => set({ repeat: e.target.value })} className={field}>
@@ -316,7 +320,7 @@ export function ErrandSheet({
             </select>
           </label>
         )}
-        {d.resumeRunId === null && d.repeat !== "" && (
+        {!d.resumes && d.repeat !== "" && (
           <label className="grid grid-cols-[2.5rem_1fr] items-center gap-2">
             <span className="text-caption text-ink-muted">대화</span>
             <select value={d.carry ? "carry" : "fresh"} onChange={(e) => set({ carry: e.target.value === "carry" })} className={field}>
