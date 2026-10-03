@@ -289,12 +289,15 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     //     반복 = `items.rrule`(개발 2 부터 있던 칸)이 붙은 «다음 회차» 한 줄. 돌기 시작하면 다음 회차를 새 줄로 만들고 규칙을 넘긴다 —
     //     회차마다 자기 답을 가진 채 캘린더에 남는다. `series_id` = 반복 묶음(첫 부탁 id), `carry` = 지난 회차의 대화를 잇나.
     //     `resume_run_id` = «이어서 부탁» 이 잇는 실행, `folder_id` = 작업 폴더(`runs/<id>`)를 누구 것으로 쓰나 —
-    //     Claude Code 는 대화를 폴더별로 저장해서, 이을 땐 같은 폴더에서 돌아야 한다. `runs.resumed_session` = 이 실행이 이은 대화.
+    //     Claude Code 는 대화를 폴더별로 저장해서, 이을 땐 같은 폴더에서 돌아야 한다. `resume_session` = 만들 때 베껴 둔 대화 번호 —
+//     부모 실행이 휴지통 비우기로 사라져도(`resume_run_id` 는 NULL 이 된다) 조용히 새 대화로 돌지 않게(코덱스 개발 7).
+//     `runs.resumed_session` = 이 실행이 이은 대화.
     "
     ALTER TABLE errands ADD COLUMN series_id INTEGER;
     ALTER TABLE errands ADD COLUMN carry INTEGER NOT NULL DEFAULT 0 CHECK (carry IN (0, 1));
     ALTER TABLE errands ADD COLUMN resume_run_id INTEGER REFERENCES runs (id) ON DELETE SET NULL;
     ALTER TABLE errands ADD COLUMN folder_id INTEGER;
+    ALTER TABLE errands ADD COLUMN resume_session TEXT;
     CREATE INDEX errands_series ON errands (series_id) WHERE series_id IS NOT NULL;
     ALTER TABLE runs ADD COLUMN resumed_session TEXT;
     ALTER TABLE errand_proposals ADD COLUMN target TEXT NOT NULL DEFAULT 'claude' CHECK (target IN ('claude', 'codex'));

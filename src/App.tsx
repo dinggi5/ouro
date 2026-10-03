@@ -156,6 +156,10 @@ function App() {
   useEffect(() => {
     api.backupError().then(setBackupError, () => {});
   }, [nowMinute]);
+  // 브리핑의 «다음 일정·빈 시간» 은 시각에 따라 바뀐다 — 팝오버가 떠 있어도 1분마다 다시 센다(코덱스 개발 7).
+  useEffect(() => {
+    errandApi.briefing().then(setBrief, () => {});
+  }, [nowMinute]);
 
   // 붙어 있는 AI. 붙거나 나가면 러스트가 «mcp-changed» 를 보낸다. 소식이 끊겨 조용히 빠지는 건 이벤트가 없어서
   // 1분마다·다시 보일 때 한 번 더 읽는다.

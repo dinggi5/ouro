@@ -279,6 +279,7 @@ export function ErrandSheet({
         />
         <p className="-mt-1 text-micro text-ink-muted">
           위 글이 그대로 {targetLabel(d.target)} 로 나가요. 일정 내용은 따로 붙지 않아요.
+          {d.target === "codex" && " Codex 는 내 전역 지침(~/.codex/AGENTS.md)이 있으면 그것도 함께 읽어요."}
         </p>
 
         <label className="grid grid-cols-[2.5rem_1fr] items-center gap-2">

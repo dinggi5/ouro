@@ -83,7 +83,10 @@ pub(crate) fn summarize(events: &[Event], errands: usize, day: NaiveDate, now: i
         parts.push(format!("부탁 {errands}"));
     }
     if let Some((s, e)) = free.first() {
-        parts.push(format!("빈 시간 {}–{}", clock(*s), clock(*e).replace("오전 ", "").replace("오후 ", "")));
+        // 끝의 «오전/오후» 는 시작과 같을 때만 뺀다 — «오전 11:00–3:00» 은 오전처럼 읽힌다(코덱스 개발 7).
+        let (a, b) = (clock(*s), clock(*e));
+        let b = if a.get(..6) == b.get(..6) { b[b.find(' ').map_or(0, |i| i + 1)..].to_string() } else { b };
+        parts.push(format!("빈 시간 {a}–{b}"));
     }
     Briefing { events: events.len(), errands, conflicts, free, parts, morning: true }
 }
@@ -151,9 +154,12 @@ mod tests {
         assert_eq!((b.events, b.conflicts, b.errands), (3, 1, 2));
         assert_eq!(b.free, vec![(h(9), h(10)), (h(12), h(15))], "9~10, 12~15 (16~18 은 셋째라 안 센다)");
         assert!(b.parts.iter().any(|p| p == "다음 오전 10:00 회의"), "{:?}", b.parts);
+        assert!(b.parts.iter().any(|p| p == "빈 시간 오전 9:00–10:00"), "{:?}", b.parts);
         // 지금이 13시면 빈 시간은 13시부터.
         let b = summarize(&events, 0, day, h(13));
         assert_eq!(b.free, vec![(h(13), h(15)), (h(16), h(18))]);
+        let b = summarize(&[ev("치과", h(15), h(16))], 0, day, h(11));
+        assert!(b.parts.iter().any(|p| p == "빈 시간 오전 11:00–오후 3:00"), "정오를 넘으면 끝에도 오후: {:?}", b.parts);
         assert!(!b.parts.iter().any(|p| p.starts_with("부탁")));
     }
 
