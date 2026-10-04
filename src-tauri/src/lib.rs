@@ -18,6 +18,7 @@ mod brief;
 mod dispatch;
 mod errands;
 mod mcp;
+mod notify;
 mod parse;
 mod store;
 mod tray;
@@ -325,6 +326,12 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             tray::build(app.handle())?;
+            // 알림을 누르면 팝오버를 연다(notify.rs). 권한은 여기서 한 번 묻는다.
+            let h = app.handle().clone();
+            notify::setup(move || {
+                let h2 = h.clone();
+                let _ = h.run_on_main_thread(move || tray::show(&h2));
+            });
             start_socket(app.handle());
             // 켤 때마다 한 번 띄운다. 도크 아이콘이 없어서, 메뉴바가 꽉 차 트레이가 노치 뒤로
             // 숨으면 켜도 아무 일도 안 일어난 것처럼 보인다 — 적어도 켠 순간엔 보이게.

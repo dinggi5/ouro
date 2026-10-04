@@ -8,8 +8,7 @@
 //   · 잠은 **최대 30초씩** 끊어 잔다. macOS 에서 스레드 잠(recv_timeout)은 단조 시계라 **맥이 자는 동안 멈춘다** —
 //     「다음 알림까지 2시간 자기」 는 맥이 1시간 잤다면 1시간 늦게 깬다. 짧게 끊으면 깨어난 뒤 30초 안에 따라잡는다.
 //   · 일정이 바뀌면 `Alerts::poke` 로 바로 깨운다 — 3분 뒤 일정을 만들며 «1분 전» 을 걸었을 때 다음 30초를 기다리지 않게.
-//   · 알림은 osascript 로 띄운다. tauri-plugin-notification(notify-rust)은 옛 NSUserNotificationCenter 를 써서
-//     macOS 26 이 조용히 버린다 — show() 가 Ok 인데 화면엔 안 뜬다(Kura notify.rs 실측). 정석은 서명 번들 + UNUserNotificationCenter(개발 8).
+//   · 알림은 `notify.rs` 가 띄운다 — 서명된 번들이면 UNUserNotificationCenter, 아니면(또는 실패하면) osascript(개발 9).
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
@@ -121,31 +120,9 @@ fn notice(e: &Event, now: i64) -> (String, String) {
     (e.title.clone(), body)
 }
 
-/// 알림을 띄운다. 실패하면(osascript 를 못 띄우거나 오류로 끝나면) `on_fail` — 끝나길 기다리는 스레드에서 부른다.
+/// 알림을 띄운다(notify.rs — UN, 안 되면 osascript). 끝내 못 띄우면 `on_fail`.
 pub(crate) fn show_notification(title: &str, body: &str, on_fail: impl FnOnce() + Send + 'static) {
-    // AppleScript 문자열 리터럴 이스케이프 — 제목은 사용자(앞으로는 MCP·가져오기)가 쓴 글이라 스크립트 주입을 막는다.
-    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
-    let script = format!(
-        "display notification \"{}\" with title \"{}\"",
-        esc(body),
-        esc(title)
-    );
-    match std::process::Command::new("osascript").arg("-e").arg(script).spawn() {
-        // 끝나길 기다리는 스레드 — 좀비 프로세스를 남기지 않고, 실패를 되돌린다.
-        Ok(mut child) => {
-            std::thread::spawn(move || match child.wait() {
-                Ok(st) if st.success() => {}
-                other => {
-                    eprintln!("알림 실패: {other:?}");
-                    on_fail();
-                }
-            });
-        }
-        Err(e) => {
-            eprintln!("알림 실패: {e}");
-            on_fail();
-        }
-    }
+    crate::notify::show(title, body, on_fail);
 }
 
 /// 백업 파일 이름: `ouro-YYYY-MM-DD.db`. 이름순 = 날짜순이라 정리가 쉽다.
