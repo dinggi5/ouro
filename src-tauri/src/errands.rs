@@ -776,6 +776,18 @@ impl Store {
             .map_err(|e| e.to_string())
     }
 
+    /// 지난번에 DB 에 못 적어 파일로 남긴 답(`dispatch::recover_pending`) — 아직 «도는 중» 인 실행에만 넣는다. 넣었으면 true.
+    pub(crate) fn finish_pending_run(&self, run_id: i64, o: &Outcome) -> Result<bool, String> {
+        let running: bool = self
+            .conn()
+            .query_row("SELECT EXISTS (SELECT 1 FROM runs WHERE id = ?1 AND status = 'running')", [run_id], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if running {
+            self.finish_run(run_id, o)?;
+        }
+        Ok(running)
+    }
+
     /// 앱이 꺼진 채 «도는 중» 으로 남은 기록 — 프로세스는 이미 없다. 실패로 닫는다.
     pub(crate) fn fail_orphan_runs(&self) -> Result<usize, String> {
         self.conn()

@@ -548,6 +548,8 @@ if [[ $RESUME -eq 1 ]]; then
   source "$MANIFEST_REL"
   [[ "${M_GIT:-}" == "$(git rev-parse HEAD)" ]] || die "지난 빌드는 커밋 ${M_GIT:-?} 의 것이다(지금 HEAD $(git rev-parse --short HEAD)). --publish 로 처음부터"
   [[ "${M_VERSION:-}" == "$VERSION_CONF" ]] || die "지난 빌드는 버전 ${M_VERSION:-?} 이다(지금 $VERSION_CONF). --publish 로 처음부터"
+  # --skip-tests 로 만든 산출물을 이어 배포하는 길을 막는다(--publish --skip-tests 와 같은 규칙, 코덱스 개발 9). 기록이 없는 옛 지문도 막는다.
+  [[ "${M_TESTED:-0}" == "1" ]] || die "지난 빌드는 테스트를 건너뛴 산출물이다 — --publish 로 처음부터"
   [[ $IS_DIRTY -eq 0 ]] || die "커밋 안 된 변경이 있다"
   check_art() { # $1=경로 $2=기대 sha256
     [[ -f "$1" ]] || die "산출물이 없다: $1 — --publish 로 처음부터"
@@ -1081,6 +1083,7 @@ if [[ $IS_DIRTY -eq 0 && $NOTARIZE -eq 1 && $UNIVERSAL -eq 0 ]]; then
   {
     printf 'M_GIT=%q\n' "$(git rev-parse HEAD)"
     printf 'M_VERSION=%q\n' "$VERSION_CONF"
+    printf 'M_TESTED=%q\n' "$RUN_TESTS"
     for pair in "DMG:$DMG_PATH" "TAR:$UPDATER_TAR" "SIG:$UPDATER_SIG" "LATEST:$LATEST_JSON" "MCPB:$MCPB_PATH" "BODY:$RELEASE_BODY"; do
       k="${pair%%:*}"; f="${pair#*:}"
       printf 'M_%s=%q\n' "$k" "$f"

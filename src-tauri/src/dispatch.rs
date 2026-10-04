@@ -525,16 +525,19 @@ fn execute(store: &Store, dir: &Path, stops: &Stops, closing: &AtomicBool, on_ch
             run_process(&exe, &args, &d.prompt, &workdir, &path_of(&exe), me, &flag, RUN_TIMEOUT, parse_output)
         }
     };
-    // 답을 못 적으면 몇 번 더 — 그래도 안 되면 «왔어요» 라고 하지 않는다(DB 에는 «도는 중» 이 남고 다음 켤 때 «끊김» 으로 닫힌다).
+    // 답을 못 적으면 몇 번 더 — 그래도 안 되면 «왔어요» 라고 하지 않는다. 받은 답은 버리지 않고 `pending/<실행>.json` 에 남겨
+    // 다음에 켤 때 DB 에 넣는다(`recover_pending`, 코덱스 개발 9 P0 — 디스크가 잠깐 찼을 때 답이 영영 사라지던 것). 그때까진 «도는 중» 이다.
     let saved = (0..3).any(|i| {
         if i > 0 {
             std::thread::sleep(Duration::from_secs(1));
         }
         store.finish_run(run_id, &outcome).map_err(|e| eprintln!("ouro: 답을 못 적었어요 — {e}")).is_ok()
     });
+    let kept = !saved && keep_pending(dir, run_id, &outcome).map_err(|e| eprintln!("ouro: 답을 파일로도 못 남겼어요 — {e}")).is_ok();
     lock(stops).remove(&run_id);
     on_change();
     match (saved, outcome.status) {
+        (false, _) if kept => notify(&title, "답을 저장하지 못했어요 — 앱을 다시 켜면 넣어요. 디스크를 확인해 주세요"),
         (false, _) => notify(&title, "답을 저장하지 못했어요 — 디스크를 확인해 주세요"),
         (_, "done") => notify(&title, "답이 왔어요"),
         (_, "failed") => notify(&title, "부탁이 실패했어요 — 팝오버에서 확인해 주세요"),
@@ -542,8 +545,57 @@ fn execute(store: &Store, dir: &Path, stops: &Stops, closing: &AtomicBool, on_ch
     }
 }
 
-/// 일꾼 스레드를 띄운다. 이전에 끊긴 «도는 중» 기록은 여기서 닫는다.
+/// DB 에 못 적은 답을 남겨 두는 곳.
+fn pending_dir(dir: &Path) -> PathBuf {
+    dir.join("pending")
+}
+
+/// 못 적은 답을 파일로(0600). 답은 남의 눈에 띄면 안 되는 글일 수 있다.
+fn keep_pending(dir: &Path, run_id: i64, o: &Outcome) -> Result<(), String> {
+    let pdir = pending_dir(dir);
+    store::create_private_dir(&pdir)?;
+    let v = serde_json::json!({ "status": o.status, "exit_code": o.exit_code, "response": o.response, "stderr": o.stderr, "session_id": o.session_id });
+    let (tmp, path) = (pdir.join(format!(".{run_id}.tmp")), pdir.join(format!("{run_id}.json")));
+    std::fs::write(&tmp, v.to_string()).map_err(|e| e.to_string())?;
+    store::restrict_file(&tmp)?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+}
+
+/// 켤 때 — 지난번에 못 적은 답을 DB 에 넣는다. «도는 중» 인 실행에만(이미 닫힌 실행은 덮지 않는다). 넣었으면 파일을 지운다.
+fn recover_pending(store: &Store, dir: &Path) {
+    let Ok(rd) = std::fs::read_dir(pending_dir(dir)) else { return };
+    for ent in rd.flatten() {
+        let path = ent.path();
+        let Some(run_id) = path.file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse::<i64>().ok()) else { continue };
+        if path.extension().is_none_or(|e| e != "json") {
+            continue;
+        }
+        let Some(v) = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { continue };
+        let status = match v["status"].as_str() {
+            Some("done") => "done",
+            Some("stopped") => "stopped",
+            _ => "failed",
+        };
+        let text = |k: &str| v[k].as_str().map(str::to_string);
+        let o = Outcome {
+            status,
+            exit_code: v["exit_code"].as_i64().map(|c| c as i32),
+            response: text("response"),
+            stderr: text("stderr"),
+            session_id: text("session_id"),
+        };
+        match store.finish_pending_run(run_id, &o) {
+            Ok(_) => {
+                let _ = std::fs::remove_file(&path);
+            }
+            Err(e) => eprintln!("ouro: 남겨 둔 답을 못 넣었어요 — {e}"),
+        }
+    }
+}
+
+/// 일꾼 스레드를 띄운다. 지난번에 못 적은 답을 넣고, 그래도 남은 «도는 중» 기록은 «끊김» 으로 닫는다.
 pub(crate) fn start(store: Arc<Store>, dir: PathBuf, on_change: OnChange) -> Dispatcher {
+    recover_pending(&store, &dir);
     if let Err(e) = store.fail_orphan_runs() {
         eprintln!("ouro: 끊긴 실행을 못 닫았어요 — {e}");
     }
@@ -829,6 +881,24 @@ mod tests {
         }
         assert!(started(due.id) && started(later.id), "풀면 둘 다 돈다");
         disp.shutdown();
+    }
+
+    #[test]
+    fn unsaved_answer_is_kept_and_put_back_on_next_start() {
+        use crate::errands::ErrandInput;
+        let d = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory();
+        let e = store.create_errand(&ErrandInput { prompt: "길게".into(), start_at: 1_000, ..ErrandInput::default() }).unwrap();
+        let run = store.begin_run(e.id, "길게", 0, None).unwrap();
+        let o = Outcome { status: "done", exit_code: Some(0), response: Some("디스크가 찼던 답".into()), stderr: None, session_id: Some("s".into()) };
+        keep_pending(d.path(), run, &o).unwrap();
+        let file = d.path().join("pending").join(format!("{run}.json"));
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        recover_pending(&store, d.path());
+        let r = store.get_errand(e.id).unwrap().unwrap().run.unwrap();
+        assert_eq!((r.status.as_str(), r.response.as_deref(), r.can_resume), ("done", Some("디스크가 찼던 답"), true));
+        assert!(!file.exists(), "넣었으면 지운다");
     }
 
     #[test]
