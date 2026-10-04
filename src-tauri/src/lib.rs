@@ -143,6 +143,12 @@ fn stop_run(state: State<'_, CoreState>, run_id: i64) -> Result<(), String> {
     }
 }
 
+/// 한 부탁의 실행 기록(최근 것부터) — 답 시트의 «지난 실행».
+#[tauri::command]
+fn list_runs(state: State<'_, CoreState>, id: i64) -> Result<Vec<errands::RunView>, String> {
+    core(&state)?.store.list_runs(id)
+}
+
 #[tauri::command]
 fn mark_run_read(state: State<'_, CoreState>, run_id: i64) -> Result<(), String> {
     core(&state)?.store.mark_run_read(run_id)
@@ -346,6 +352,7 @@ pub fn run() {
             run_errand_now,
             stop_run,
             mark_run_read,
+            list_runs,
             briefing,
             set_morning_briefing,
             create_event,

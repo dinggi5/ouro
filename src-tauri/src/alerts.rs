@@ -49,15 +49,15 @@ impl Alerts {
 /// 시각 일정 = 시작 − N분. 종일 일정 = 시작일 로컬 오전 9시 − N분(0 = 당일 9시, 1440 = 전날 9시).
 pub(crate) fn fire_at(e: &Event) -> Option<i64> {
     let m = e.alert_min?;
-    let base = if e.all_day {
+    if e.all_day {
+        // 종일은 **벽시계로** 뺀다 — «전날 9시» 는 서머타임 전환일에도 전날 9시다(24시간을 빼면 8시·10시가 된다, 코덱스 개발 6).
         let d = NaiveDate::parse_from_str(e.start_date.as_deref()?, "%Y-%m-%d").ok()?;
-        let t = d.and_hms_opt(ALL_DAY_ALERT_HOUR, 0, 0)?;
-        // 서머타임으로 9시가 두 번이면 앞의 것, 없으면(건너뛴 시간) None — 9시엔 전환이 없으니 사실상 항상 하나다.
-        Local.from_local_datetime(&t).earliest()?.timestamp_millis()
-    } else {
-        e.start_at?
-    };
-    Some(base - m * 60_000)
+        let t = d.and_hms_opt(ALL_DAY_ALERT_HOUR, 0, 0)? - chrono::Duration::minutes(m);
+        // 서머타임으로 그 시각이 두 번이면 앞의 것, 없으면(건너뛴 시간) 한 시간 뒤.
+        let at = Local.from_local_datetime(&t).earliest().or_else(|| Local.from_local_datetime(&(t + chrono::Duration::hours(1))).earliest())?;
+        return Some(at.timestamp_millis());
+    }
+    Some(e.start_at? - m * 60_000)
 }
 
 /// 지금 띄울 것 (순수 — 테스트 가능): 울릴 시각이 (now − 10분, now] 안인 것.
@@ -268,6 +268,8 @@ mod tests {
         let nine = Local.with_ymd_and_hms(2026, 9, 28, 9, 0, 0).earliest().unwrap().timestamp_millis();
         assert_eq!(fire_at(&ev(None, Some("2026-09-28"), Some(0))), Some(nine));
         assert_eq!(fire_at(&ev(None, Some("2026-09-28"), Some(1440))), Some(nine - 1440 * MIN));
+        let prev_nine = Local.with_ymd_and_hms(2026, 9, 27, 9, 0, 0).earliest().unwrap().timestamp_millis();
+        assert_eq!(fire_at(&ev(None, Some("2026-09-28"), Some(1440))), Some(prev_nine), "전날 9시(벽시계)");
     }
 
     #[test]

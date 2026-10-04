@@ -312,6 +312,9 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     //     INSERT 뒤 비었으면 채우는 트리거(INSERT 하는 곳마다 고치지 않는다; 동기화로 들어온 줄은 제 uid 를 들고 온다) →
     //     한 번 붙은 uid 는 못 바꾸는 트리거(바뀌면 다른 기기에서 다른 물건이 된다). NOT NULL 은 이 둘이 대신 지킨다.
     UID_MIGRATION,
+    // 8 — 개발 9: 반복 부탁이 지키려는 로컬 벽시계 시각(`HH:MM:SS`). 서머타임으로 그 시각이 없는 날엔 회차가 한 시간 뒤로 밀리는데,
+    //     다음 회차는 앞 회차의 시각을 베끼므로 그 밀린 시각이 영영 굳었다(코덱스 개발 8 P2). 밀린 회차에만 원래 시각을 적는다(NULL = 제 시각 그대로).
+    "ALTER TABLE errands ADD COLUMN wall_time TEXT",
 ];
 
 /// SQL 로 만드는 UUID v4: 8-4-4-4-12, 세 번째 묶음 첫 글자 `4`, 네 번째 묶음 첫 글자 8·9·a·b.
@@ -703,10 +706,13 @@ impl Store {
         self.get_event(id)?.ok_or_else(|| "되살린 일정을 못 찾았어요".into())
     }
 
-    /// 휴지통에서 7일 지난 것을 지운다(부탁·실행·알림 기록은 CASCADE 로 같이).
+    /// 휴지통에서 7일 지난 것을 지운다(부탁·알림 기록은 CASCADE 로 같이).
+    /// **한 번이라도 돈 부탁은 안 지운다** — `runs` 에 바깥으로 나간 원문(`sent_text`)이 있고, 지우면 CASCADE 로 같이 사라진다
+    /// (CLAUDE.md «바깥으로 나간 원문은 저장한다», 코덱스 개발 6 P1). 휴지통에 숨은 채 남는다 — 목록·알림·MCP 는 `deleted_at` 으로 거른다.
     fn purge_trash(&self, now: i64) -> rusqlite::Result<usize> {
         self.conn().execute(
-            "DELETE FROM items WHERE deleted_at IS NOT NULL AND deleted_at < ?1",
+            "DELETE FROM items WHERE deleted_at IS NOT NULL AND deleted_at < ?1
+               AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.item_id = items.id)",
             [now - TRASH_KEEP_MS],
         )
     }
@@ -992,6 +998,23 @@ mod tests {
         assert_eq!(s.purge_trash(now_ms()).unwrap(), 1);
         assert!(s.restore_event(old.id).is_err());
         assert!(s.restore_event(fresh.id).is_ok());
+    }
+
+    #[test]
+    fn purge_keeps_errands_that_sent_text_out() {
+        use crate::errands::ErrandInput;
+        let s = Store::open_in_memory();
+        let ran = s.create_errand(&ErrandInput { prompt: "보낸 글".into(), start_at: now_ms(), ..ErrandInput::default() }).unwrap();
+        let never = s.create_errand(&ErrandInput { prompt: "안 보낸 글".into(), start_at: now_ms(), ..ErrandInput::default() }).unwrap();
+        let run = s.begin_run(ran.id, "보낸 글", 0, None).unwrap();
+        s.finish_run(run, &crate::errands::Outcome { status: "done", exit_code: Some(0), response: Some("답".into()), stderr: None, session_id: None })
+            .unwrap();
+        s.delete_errand(ran.id).unwrap();
+        s.delete_errand(never.id).unwrap();
+        s.conn().execute("UPDATE items SET deleted_at = 0", []).unwrap();
+        assert_eq!(s.purge_trash(now_ms()).unwrap(), 1, "안 돈 부탁만 비운다");
+        let sent: String = s.conn().query_row("SELECT sent_text FROM runs WHERE id = ?1", [run], |r| r.get(0)).unwrap();
+        assert_eq!(sent, "보낸 글", "나간 원문은 남는다");
     }
 
     #[test]

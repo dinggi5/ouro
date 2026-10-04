@@ -17,10 +17,13 @@
 //   · 반대 방향(«AI 가 붙어 있나») 은 사이드카가 15초마다 `hello` 를 보내 알린다(`Presence`, 메모리에만). 팝오버 아래 «◯ Claude Code 연결됨».
 //     사이드카 프로세스마다 `instance`(pid)로 따로 센다 — Claude Code 세션 둘이 같은 이름으로 붙어도 하나가 나갈 때 다른 쪽이 안 지워지게.
 //   · 권한: 소켓은 0700 폴더 안의 0600 파일 — 같은 사용자만 연결한다.
+//   · 상한(개발 9, 코덱스 개발 5·6 P2): 동시 연결 32, 요청 한 줄은 연결부터 10초 안에 다 와야 한다. 읽기 시간 제한만 두면
+//     한 바이트씩 4초마다 흘리는 연결이 스레드를 며칠 붙든다 — 같은 사용자의 프로세스만 붙지만, 고장 난 클라이언트가 앱을 굶기지 않게.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -30,6 +33,11 @@ use serde_json::{json, Value};
 
 use crate::errands::{ErrandInput, ErrandProposal, ErrandProposalInput, TOOL_CHOICES};
 use crate::store::{self, Event, EventInput, Proposal, Store};
+
+/// 동시에 붙들 수 있는 연결 수. 넘으면 받자마자 닫는다(사이드카는 «앱이 바빠요» 로 읽고 다시 묻는다).
+const CONN_MAX: usize = 32;
+/// 요청 한 줄이 다 와야 하는 시한(연결부터).
+const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 
 /// 요청 한 줄 상한. 제목·메모 상한(store.rs)보다 넉넉하되 거대한 글은 읽지도 않는다.
 const REQUEST_MAX: u64 = 64 * 1024;
@@ -154,28 +162,59 @@ pub(crate) fn serve(store: Arc<Store>, presence: Arc<Presence>, dir: &Path, on_c
     std::thread::Builder::new()
         .name("ouro-mcp-socket".into())
         .spawn(move || {
+            let active = Arc::new(AtomicUsize::new(0));
             for conn in listener.incoming().flatten() {
+                if active.fetch_add(1, Ordering::SeqCst) >= CONN_MAX {
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    drop(conn);
+                    continue;
+                }
+                let slot = Slot(active.clone());
                 let store = store.clone();
                 let presence = presence.clone();
                 let on_change = on_change.clone();
                 // 연결 하나 = 요청 하나(짧다). 느린 연결 하나가 다른 걸 막지 않게 스레드로.
                 let _ = std::thread::Builder::new()
                     .name("ouro-mcp-conn".into())
-                    .spawn(move || serve_one(conn, &store, &presence, &on_change));
+                    .spawn(move || {
+                        let _slot = slot;
+                        serve_one(conn, &store, &presence, &on_change)
+                    });
             }
         })
         .map_err(|e| format!("소켓 스레드 실패: {e}"))?;
     Ok(())
 }
 
-fn serve_one(conn: UnixStream, store: &Store, presence: &Presence, on_change: &OnChange) {
-    let _ = conn.set_read_timeout(Some(Duration::from_secs(5)));
-    let _ = conn.set_write_timeout(Some(Duration::from_secs(5)));
-    let mut line = String::new();
-    let Ok(read) = conn.try_clone() else { return };
-    if BufReader::new(read.take(REQUEST_MAX)).read_line(&mut line).is_err() {
-        return;
+/// 연결 자리 하나 — 스레드가 끝나면(패닉 포함) 돌려준다.
+struct Slot(Arc<AtomicUsize>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
+}
+
+/// 한 줄을 `deadline` 안에 읽는다(최대 `max` 바이트). 시한을 넘기거나 끊기면 None.
+fn read_line_by(conn: &mut UnixStream, max: u64, deadline: Instant) -> Option<String> {
+    let mut buf: Vec<u8> = vec![];
+    let mut chunk = [0u8; 4096];
+    while !buf.contains(&b'\n') && (buf.len() as u64) < max {
+        let left = deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero())?;
+        conn.set_read_timeout(Some(left)).ok()?;
+        match conn.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&chunk[..n.min((max as usize).saturating_sub(buf.len()))]),
+            Err(_) => return None,
+        }
+    }
+    let end = buf.iter().position(|&b| b == b'\n').unwrap_or(buf.len());
+    String::from_utf8(buf[..end].to_vec()).ok()
+}
+
+fn serve_one(mut conn: UnixStream, store: &Store, presence: &Presence, on_change: &OnChange) {
+    let _ = conn.set_write_timeout(Some(Duration::from_secs(5)));
+    let Some(line) = read_line_by(&mut conn, REQUEST_MAX, Instant::now() + REQUEST_DEADLINE) else { return };
     let (reply, proposed) = match serde_json::from_str::<Request>(&line) {
         Ok(req) => {
             // 어떤 요청이든 «붙어 있다» 는 소식이다. instance 가 없는 옛 사이드카는 이름으로 센다.
@@ -622,6 +661,7 @@ pub(crate) fn conflicts(store: &Store, e: &EventInput, skip: Option<i64>) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader};
 
     fn now() -> DateTime<Local> {
         Local.with_ymd_and_hms(2026, 10, 1, 8, 0, 0).earliest().unwrap() // 목요일
@@ -900,6 +940,28 @@ mod tests {
         assert_eq!(p.clients(now).len(), PRESENCE_MAX);
         p.touch(&"x".repeat(10_000), "long", now);
         assert!(p.lock().seen.keys().all(|k| k.chars().count() <= INSTANCE_MAX));
+    }
+
+    #[test]
+    fn slow_request_is_cut_at_the_deadline() {
+        // 한 바이트씩 흘리는 연결도 시한이 지나면 끊는다 — 읽기 시간 제한만으론 영영 붙들린다.
+        let (mut a, mut b) = UnixStream::pair().unwrap();
+        let t = Instant::now();
+        let writer = std::thread::spawn(move || {
+            for _ in 0..20 {
+                if b.write_all(b"{").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+        assert_eq!(read_line_by(&mut a, REQUEST_MAX, Instant::now() + Duration::from_millis(500)), None);
+        assert!(t.elapsed() < Duration::from_millis(1500));
+        drop(a);
+        writer.join().unwrap();
+        let (mut a, mut b) = UnixStream::pair().unwrap();
+        b.write_all(b"{\"op\":\"x\"}\nrest").unwrap();
+        assert_eq!(read_line_by(&mut a, REQUEST_MAX, Instant::now() + Duration::from_secs(1)).as_deref(), Some("{\"op\":\"x\"}"));
     }
 
     #[test]

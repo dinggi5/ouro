@@ -9,9 +9,14 @@
 //   · **원문은 표준입력으로.** 인자로 주면 `-` 로 시작하는 부탁이 플래그로 읽힌다.
 //   · **보낸 원문이 곧 부탁 문장이다.** 일정·AI 답이 섞여 들어가지 않는다 — 바깥에서 온 글은 문장이 될 수 없다(CLAUDE.md).
 //   · 놓친 부탁(맥이 자고 있었다): «늦게 실행» 은 12시간까지, «건너뜀» 은 5분을 넘기면. 건너뛰어도 기록 한 줄을 남겨 다시 안 걸린다.
-//   · 시간 제한 10분, 하루 실행 상한 30(예약 실행만 — 사람이 누른 «지금 실행» 은 세지만 막지 않는다). 프로세스 그룹째 멈춘다.
-//   · 앱이 꺼진 채 남은 «도는 중» 은 켤 때 «끊김» 으로 닫는다 — 프로세스가 이미 없다.
-//   · `claude` 는 Finder 로 켠 앱의 좁은 PATH 에선 안 보인다 — 흔한 설치 자리, 안 되면 로그인 셸에 물어 찾는다(개발 5 첫 확인 거리).
+//   · 시간 제한 10분, 하루 실행 상한 50(예약 실행만 — 사람이 누른 «지금 실행» 은 세지만 막지 않는다, `errands::DAILY_CAP`).
+//     프로세스 그룹째 멈춘다.
+//   · **앱이 강제 종료돼도 자식이 안 남는다**(개발 9): CLI 를 작은 `sh` 껍데기로 띄우고, 껍데기가 같은 그룹에 감시꾼을 하나 둔 뒤
+//     `exec` 로 CLI 가 된다. 감시꾼은 앱 pid 가 사라지면 그룹째 죽인다 — 강제 종료·패닉·크래시엔 `shutdown` 이 못 돌기 때문이다.
+//     그래서 켤 때 «도는 중» 을 «끊김» 으로 닫아도 옛 프로세스가 뒤에서 계속 돌며 다시 실행과 겹치지 않는다(코덱스 개발 6·7·8 P1).
+//   · 앱이 꺼진 채 남은 «도는 중» 은 켤 때 «끊김» 으로 닫는다 — 프로세스는 위 감시꾼이 이미 치웠다.
+//   · `claude` 는 Finder 로 켠 앱의 좁은 PATH 에선 안 보인다 — 흔한 설치 자리, 안 되면 로그인 셸의 PATH 에서 찾는다(개발 5 첫 확인 거리).
+//     자식에게 주는 PATH 도 로그인 셸 것을 잇는다 — `#!/usr/bin/env node` 인 CLI 가 nvm 의 node 를 찾게(개발 9, 코덱스 개발 8 P2).
 //   · **Codex(개발 7)도 «대화만»** 이 기본이다: `--ignore-user-config`(사용자 config 의 MCP 서버·모델·권한을 안 읽음) +
 //     `--ignore-rules` + 읽기 전용 샌드박스 + 셸·앱·플러그인·브라우저·컴퓨터 조작 등 도구 기능을 `-c features.X=false` 로 끈다.
 //     `--disable X` 가 아니라 `-c` 인 이유: 모르는 기능 이름을 `--disable` 은 **오류로 끝내고** `-c` 는 경고만 한다(2026-10-03 실측,
@@ -37,10 +42,11 @@ const MAX_NAP: Duration = Duration::from_secs(30);
 const RUN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const SKIP_GRACE_MS: i64 = 5 * 60 * 1000;
 const LATE_RUN_MAX_MS: i64 = 12 * 60 * 60 * 1000;
-const DAILY_CAP: i64 = 30;
-const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 /// 읽어 둘 출력 상한(바이트). 넘는 건 버리되 계속 비워 준다(안 비우면 자식이 파이프에 막힌다).
-const OUTPUT_CAP: usize = 2 * 1024 * 1024;
+/// 답은 어차피 10만 자에서 자른다(`errands::RESPONSE_MAX`) — 이 상한은 JSON 이 잘려 정상 답을 실패로 읽는 일이 없게 넉넉히.
+const OUTPUT_CAP: usize = 8 * 1024 * 1024;
+/// 감시꾼이 앱이 살아 있나 보는 간격(초). 앱이 죽고 길어야 이만큼 뒤에 자식이 멈춘다.
+const WATCH_SECS: u32 = 2;
 
 pub(crate) type OnChange = Arc<dyn Fn() + Send + Sync>;
 
@@ -224,18 +230,40 @@ fn find_cli(target: &str) -> Result<PathBuf, String> {
         cands.extend(rels.iter().map(|r| h.join(r)));
     }
     cands.extend(["/opt/homebrew/bin", "/usr/local/bin"].map(|d| Path::new(d).join(name)));
-    if let Some(p) = cands.into_iter().find(|p| p.is_file()) {
-        return Ok(p);
+    // 로그인 셸의 PATH — nvm 같은 곳에 깔았을 때.
+    if let Some(lp) = login_path() {
+        cands.extend(std::env::split_paths(&lp).map(|d| d.join(name)));
     }
-    // 로그인 셸의 PATH — nvm 같은 곳에 깔았을 때. 대화형(-i)은 rc 파일 잡음이 섞이니 마지막 «/» 로 시작하는 줄만 쓴다.
+    cands
+        .into_iter()
+        .find(|p| p.is_file())
+        .ok_or_else(|| format!("{label}를 못 찾았어요 — 설치돼 있고 로그인돼 있어야 해요"))
+}
+
+/// 로그인 셸의 PATH. Finder 로 켠 앱의 PATH 는 `/usr/bin:/bin:…` 뿐이라 nvm·volta 같은 곳(셸 rc 가 PATH 에 넣는다)이 안 보인다.
+/// 처음 필요할 때 셸을 한 번 띄워(최대 5초) 앱이 켜져 있는 동안 기억한다. 못 얻으면 기억하지 않고 다음에 다시 묻는다.
+fn login_path() -> Option<String> {
+    static CACHE: Mutex<Option<String>> = Mutex::new(None);
+    if let Some(p) = lock(&CACHE).clone() {
+        return Some(p);
+    }
+    let p = ask_login_shell_path()?;
+    *lock(&CACHE) = Some(p.clone());
+    Some(p)
+}
+
+fn ask_login_shell_path() -> Option<String> {
+    const MARK: &str = "__OURO_PATH__=";
+    // 대화형(-i)은 rc 파일 잡음이 섞이니 표식이 붙은 줄만 쓴다.
     let mut child = Command::new("/bin/zsh")
-        .args(["-lic", &format!("command -v {name}")])
+        .args(["-lic", &format!("printf '\\n{MARK}%s\\n' \"$PATH\"")])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .process_group(0)
         .spawn()
-        .map_err(|e| format!("{label} 를 찾는 중 셸을 못 띄웠어요: {e}"))?;
+        .map_err(|e| eprintln!("ouro: 로그인 셸을 못 띄웠어요 — {e}"))
+        .ok()?;
     let out = drain(child.stdout.take().unwrap());
     // rc 파일이 입력을 기다리며 멈출 수 있다 — 5초만 기다리고 접는다(코덱스 개발 5: 이 대기는 중단 버튼으로도 안 끊긴다).
     let started = Instant::now();
@@ -249,13 +277,20 @@ fn find_cli(target: &str) -> Result<PathBuf, String> {
     }
     kill_group(child.id()); // 셸이 끝난 뒤 남은 손주가 파이프를 붙들지 않게
     let stdout = String::from_utf8_lossy(&out.finish(Duration::from_secs(2))).into_owned();
-    stdout
-        .lines()
-        .rev()
-        .map(str::trim)
-        .find(|l| l.starts_with('/') && Path::new(l).is_file())
-        .map(PathBuf::from)
-        .ok_or_else(|| format!("{label}를 못 찾았어요 — 설치돼 있고 로그인돼 있어야 해요"))
+    stdout.lines().rev().find_map(|l| l.strip_prefix(MARK)).map(str::to_string).filter(|p| !p.is_empty())
+}
+
+/// 자식에게 줄 PATH (순수 — 테스트 가능): CLI 가 있는 폴더(링크면 실제 폴더도) → 로그인 셸 PATH → 앱의 PATH → 기본 자리. 겹치면 앞의 것만.
+fn child_path(exe: &Path, login: Option<&str>, inherited: Option<&str>) -> String {
+    let mut dirs: Vec<PathBuf> = vec![];
+    dirs.extend(exe.parent().map(Path::to_path_buf));
+    dirs.extend(std::fs::canonicalize(exe).ok().and_then(|p| p.parent().map(Path::to_path_buf)));
+    for list in [login, inherited, Some("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")].into_iter().flatten() {
+        dirs.extend(std::env::split_paths(list));
+    }
+    let mut seen = HashSet::new();
+    dirs.retain(|d| !d.as_os_str().is_empty() && seen.insert(d.clone()));
+    std::env::join_paths(dirs).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
 /// `codex exec --json` 의 출력(JSONL 이벤트) → 결과. 답 = 마지막 `agent_message`, 대화 번호 = `thread.started` 의 `thread_id`.
@@ -357,22 +392,43 @@ fn kill_group(pid: u32) {
     }
 }
 
+/// 감시 껍데기(`sh -c`). `$1` = 앱 pid, 나머지 = CLI 와 인자. 그룹 리더인 껍데기(`$$`)가 감시꾼을 같은 그룹에 띄우고 `exec` 로 CLI 가 된다 —
+/// 그래서 CLI 의 pid = 그룹 번호이고, 평소의 `kill_group` 이 감시꾼까지 같이 치운다. 감시꾼은 앱이 사라지면 그룹째 죽인다.
+/// 감시꾼의 표준 입출력은 `/dev/null` — 출력 파이프를 붙들어 답 읽기를 막지 않게.
+const WATCH_SH: &str = r#"p=$1; shift; g=$$
+( while kill -0 "$p" 2>/dev/null; do sleep __SECS__; done; kill -KILL -- "-$g" ) </dev/null >/dev/null 2>&1 &
+exec "$@""#;
+
 /// 프로세스를 돌려 끝날 때까지 기다린다. `stop` 이 켜지면 멈추고(stopped), `timeout` 을 넘으면 멈춘다(failed).
+/// `parent` 가 사라지면 감시꾼이 프로세스 그룹을 죽인다(`WATCH_SH`) — 보통은 이 앱의 pid.
+#[allow(clippy::too_many_arguments)]
 fn run_process(
     exe: &Path,
     args: &[String],
     prompt: &str,
     cwd: &Path,
+    path_env: &str,
+    parent: u32,
     stop: &AtomicBool,
     timeout: Duration,
     parse: fn(&str, &str, Option<i32>) -> Outcome,
 ) -> Outcome {
     let fail = |msg: String| Outcome { status: "failed", exit_code: None, response: None, stderr: Some(msg), session_id: None };
-    let path_env = format!(
-        "{}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
-        exe.parent().map(|p| p.display().to_string()).unwrap_or_default()
-    );
-    let mut child = match Command::new(exe)
+    let name = exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    // 확보한 뒤 찾는 사이(로그인 셸 최대 5초)에 중단을 눌렀으면 띄우지 않는다(코덱스 개발 6 P1).
+    if stop.load(Ordering::SeqCst) {
+        return Outcome { status: "stopped", exit_code: None, response: None, stderr: None, session_id: None };
+    }
+    // 껍데기는 늘 뜨므로 «없는 실행 파일» 은 여기서 가린다 — 안 그러면 `exec` 의 127 이 알 수 없는 실패로 읽힌다.
+    if !exe.is_file() {
+        return fail(format!("`{name}` 를 못 띄웠어요: 파일이 없어요"));
+    }
+    let mut child = match Command::new("/bin/sh")
+        .arg("-c")
+        .arg(WATCH_SH.replace("__SECS__", &WATCH_SECS.to_string()))
+        .arg("ouro-run")
+        .arg(parent.to_string())
+        .arg(exe)
         .args(args)
         .current_dir(cwd)
         .env("PATH", path_env)
@@ -383,7 +439,7 @@ fn run_process(
         .spawn()
     {
         Ok(c) => c,
-        Err(e) => return fail(format!("`{}` 를 못 띄웠어요: {e}", exe.file_name().map(|n| n.to_string_lossy()).unwrap_or_default())),
+        Err(e) => return fail(format!("`{name}` 를 못 띄웠어요: {e}")),
     };
     let pid = child.id();
     if let Some(mut stdin) = child.stdin.take() {
@@ -416,7 +472,7 @@ fn run_process(
     };
     // 자식이 출력 파이프를 붙든 손주를 남기면 읽기가 안 끝난다 — 프로세스 그룹을 한 번 더 치고 3초만 기다린다(코덱스 개발 5).
     kill_group(pid);
-    let stdout = String::from_utf8_lossy(&out.finish(Duration::from_secs(3))).into_owned();
+    let stdout_bytes = out.finish(Duration::from_secs(3));
     let stderr = String::from_utf8_lossy(&err.finish(Duration::from_secs(3))).into_owned();
     if stopped {
         return Outcome { status: "stopped", exit_code: None, response: None, stderr: None, session_id: None };
@@ -424,7 +480,10 @@ fn run_process(
     if timed_out {
         return fail(format!("{}분을 넘겨 멈췄어요", timeout.as_secs() / 60));
     }
-    parse(&stdout, &stderr, status.and_then(|s| s.code()))
+    if stdout_bytes.len() >= OUTPUT_CAP {
+        return fail(format!("답이 너무 길어서({}MB 넘음) 읽지 못했어요", OUTPUT_CAP / 1024 / 1024));
+    }
+    parse(&String::from_utf8_lossy(&stdout_bytes), &stderr, status.and_then(|s| s.code()))
 }
 
 fn notify(title: &str, body: &str) {
@@ -446,6 +505,8 @@ fn execute(store: &Store, dir: &Path, stops: &Stops, closing: &AtomicBool, on_ch
     let workdir = dir.join("runs").join(d.folder.to_string());
     let codex = d.target == "codex";
     let session = d.session.as_deref();
+    let me = std::process::id();
+    let path_of = |exe: &Path| child_path(exe, login_path().as_deref(), std::env::var("PATH").ok().as_deref());
     let outcome = match (find_cli(&d.target), store::create_private_dir(&workdir)) {
         (Err(e), _) | (_, Err(e)) => Outcome { status: "failed", exit_code: None, response: None, stderr: Some(e), session_id: None },
         _ if session.is_some_and(|s| !safe_session(s)) => Outcome {
@@ -456,10 +517,12 @@ fn execute(store: &Store, dir: &Path, stops: &Stops, closing: &AtomicBool, on_ch
             session_id: None,
         },
         (Ok(exe), Ok(())) if codex => {
-            run_process(&exe, &codex_args(&d.allowed_tools, session), &d.prompt, &workdir, &flag, RUN_TIMEOUT, parse_codex_output)
+            let args = codex_args(&d.allowed_tools, session);
+            run_process(&exe, &args, &d.prompt, &workdir, &path_of(&exe), me, &flag, RUN_TIMEOUT, parse_codex_output)
         }
         (Ok(exe), Ok(())) => {
-            run_process(&exe, &claude_args(&d.allowed_tools, session), &d.prompt, &workdir, &flag, RUN_TIMEOUT, parse_output)
+            let args = claude_args(&d.allowed_tools, session);
+            run_process(&exe, &args, &d.prompt, &workdir, &path_of(&exe), me, &flag, RUN_TIMEOUT, parse_output)
         }
     };
     // 답을 못 적으면 몇 번 더 — 그래도 안 되면 «왔어요» 라고 하지 않는다(DB 에는 «도는 중» 이 남고 다음 켤 때 «끊김» 으로 닫힌다).
@@ -532,11 +595,7 @@ pub(crate) fn start(store: Arc<Store>, dir: PathBuf, on_change: OnChange) -> Dis
                             if cl.load(Ordering::SeqCst) {
                                 break;
                             }
-                            // 상한이면 «돌 것» 만 대기로 남긴다 — 건너뛸 부탁은 상한과 무관하게 기록을 남겨야 대기로 영영 안 묵는다(코덱스 개발 5 2차).
-                            let capped = store.runs_since(now_ms() - DAY_MS).unwrap_or(0) >= DAILY_CAP;
-                            if capped && decide(&d.late, (now_ms() - d.start_at).max(0)) == Decision::Run {
-                                continue;
-                            }
+                            // 하루 상한은 `claim_run` 이 지금 값으로 본다(상한이면 None — 대기로 남는다).
                             // 목록을 읽은 뒤 사람이 고치거나 지웠을 수 있다 — 확보할 때 현재 값으로 다시 읽는다.
                             // 업데이트 설치 중이면 확보하지 않는다 — 잠금을 쥔 채 확인·확보한다(`hold` 주석).
                             let claimed = {
@@ -616,6 +675,8 @@ mod tests {
         assert_eq!(parse_output("not json", "boom", Some(2)).stderr.as_deref(), Some("boom"));
     }
 
+    const TEST_PATH: &str = "/usr/bin:/bin";
+
     fn script(dir: &Path, body: &str) -> PathBuf {
         let p = dir.join("fake-claude");
         std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
@@ -629,7 +690,7 @@ mod tests {
         // 표준입력으로 받은 문장을 그대로 답에 넣어 돌려준다.
         let exe = script(d.path(), r#"IN=$(cat); printf '{"type":"result","is_error":false,"result":"got:%s","session_id":"abc"}' "$IN""#);
         let stop = AtomicBool::new(false);
-        let o = run_process(&exe, &[], "--위험한 시작", d.path(), &stop, Duration::from_secs(10), parse_output);
+        let o = run_process(&exe, &[], "--위험한 시작", d.path(), TEST_PATH, std::process::id(), &stop, Duration::from_secs(10), parse_output);
         assert_eq!((o.status, o.response.as_deref()), ("done", Some("got:--위험한 시작")));
     }
 
@@ -638,7 +699,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let exe = script(d.path(), "sleep 30 & wait");
         let t = Instant::now();
-        let o = run_process(&exe, &[], "x", d.path(), &AtomicBool::new(false), Duration::from_millis(400), parse_output);
+        let o = run_process(&exe, &[], "x", d.path(), TEST_PATH, std::process::id(), &AtomicBool::new(false), Duration::from_millis(400), parse_output);
         assert_eq!(o.status, "failed");
         assert!(o.stderr.unwrap().contains("멈췄어요") && t.elapsed() < Duration::from_secs(5));
 
@@ -649,7 +710,7 @@ mod tests {
             s2.store(true, Ordering::SeqCst);
         });
         let t = Instant::now();
-        let o = run_process(&exe, &[], "x", d.path(), &stop, Duration::from_secs(60), parse_output);
+        let o = run_process(&exe, &[], "x", d.path(), TEST_PATH, std::process::id(), &stop, Duration::from_secs(60), parse_output);
         assert_eq!(o.status, "stopped");
         assert!(t.elapsed() < Duration::from_secs(5));
     }
@@ -659,15 +720,51 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let exe = script(d.path(), r#"cat >/dev/null; sleep 30 & printf '{"result":"ok"}'"#);
         let t = Instant::now();
-        let o = run_process(&exe, &[], "x", d.path(), &AtomicBool::new(false), Duration::from_secs(60), parse_output);
+        let o = run_process(&exe, &[], "x", d.path(), TEST_PATH, std::process::id(), &AtomicBool::new(false), Duration::from_secs(60), parse_output);
         assert_eq!(o.response.as_deref(), Some("ok"));
         assert!(t.elapsed() < Duration::from_secs(8), "출력 파이프를 붙든 손주가 일꾼을 막지 않는다");
     }
 
     #[test]
+    fn child_dies_when_the_app_is_killed() {
+        // 앱이 강제 종료돼 `shutdown` 이 못 돌아도 감시꾼이 그룹째 치운다 — 가짜 «앱» 을 띄웠다가 죽여 본다.
+        let d = tempfile::tempdir().unwrap();
+        let exe = script(d.path(), "echo $$ > pid; sleep 60 & wait");
+        let mut app = Command::new("/bin/sleep").arg("60").spawn().unwrap();
+        let app_pid = app.id();
+        let dir = d.path().to_path_buf();
+        let t = Instant::now();
+        let worker = std::thread::spawn(move || {
+            run_process(&exe, &[], "x", &dir, TEST_PATH, app_pid, &AtomicBool::new(false), Duration::from_secs(60), parse_output)
+        });
+        std::thread::sleep(Duration::from_millis(500));
+        app.kill().unwrap();
+        app.wait().unwrap(); // 거두지 않으면 좀비라 `kill -0` 이 계속 성공한다
+        let o = worker.join().unwrap();
+        assert_eq!(o.status, "failed");
+        assert!(t.elapsed() < Duration::from_secs(8), "앱이 죽으면 몇 초 안에 자식도 멈춘다 ({:?})", t.elapsed());
+    }
+
+    #[test]
+    fn stop_before_spawn_never_starts_the_cli() {
+        let d = tempfile::tempdir().unwrap();
+        let exe = script(d.path(), "touch started");
+        let o = run_process(&exe, &[], "x", d.path(), TEST_PATH, std::process::id(), &AtomicBool::new(true), Duration::from_secs(5), parse_output);
+        assert_eq!(o.status, "stopped");
+        assert!(!d.path().join("started").exists(), "중단이 먼저면 띄우지 않는다");
+    }
+
+    #[test]
+    fn child_path_keeps_login_shell_dirs_after_the_cli_dir() {
+        let p = child_path(Path::new("/x/bin/claude"), Some("/nvm/bin:/usr/bin"), Some("/usr/bin:/bin"));
+        assert_eq!(p, "/x/bin:/nvm/bin:/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin");
+        assert!(child_path(Path::new("/x/claude"), None, None).starts_with("/x:/opt/homebrew/bin"));
+    }
+
+    #[test]
     fn missing_executable_fails_with_a_reason() {
         let d = tempfile::tempdir().unwrap();
-        let o = run_process(&d.path().join("nope"), &[], "x", d.path(), &AtomicBool::new(false), Duration::from_secs(1), parse_output);
+        let o = run_process(&d.path().join("nope"), &[], "x", d.path(), TEST_PATH, std::process::id(), &AtomicBool::new(false), Duration::from_secs(1), parse_output);
         assert_eq!(o.status, "failed");
         assert!(o.stderr.unwrap().contains("못 띄웠어요"));
     }

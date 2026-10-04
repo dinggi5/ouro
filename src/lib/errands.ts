@@ -89,6 +89,8 @@ export const errandApi = {
   runNow: (id: number) => invoke<void>("run_errand_now", { id }),
   stop: (runId: number) => invoke<void>("stop_run", { runId }),
   markRead: (runId: number) => invoke<void>("mark_run_read", { runId }),
+  /** 이 부탁의 실행 기록, 최근 것부터(맨 앞 = `Errand.run`). */
+  runs: (id: number) => invoke<Run[]>("list_runs", { id }),
   briefing: () => invoke<Briefing>("briefing"),
   setMorning: (on: boolean) => invoke<void>("set_morning_briefing", { on }),
 };
@@ -117,13 +119,16 @@ export function unread(e: Errand): boolean {
 }
 
 export function stateLabel(e: Errand): string {
-  switch (stateOf(e)) {
-    case "waiting":
-      return "대기";
+  if (!e.run) return "대기";
+  return unread(e) ? "답이 왔어요" : runLabel(e.run);
+}
+
+export function runLabel(run: Run): string {
+  switch (run.status) {
     case "running":
       return "도는 중";
     case "done":
-      return unread(e) ? "답이 왔어요" : "답";
+      return "답";
     case "failed":
       return "실패";
     case "stopped":

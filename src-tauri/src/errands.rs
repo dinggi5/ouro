@@ -31,6 +31,10 @@ const TITLE_CHARS: usize = 40;
 /// 받아 둘 답의 길이(글자). 거대한 답이 DB 와 팝오버를 키우지 않게.
 const RESPONSE_MAX: usize = 100_000;
 const STDERR_MAX: usize = 2_000;
+/// 하루(지난 24시간) 예약 실행 상한. 사람이 누른 «지금 실행» 은 세지만 막지 않는다 — 상한은 AI 고리가 스스로 굴러가는 걸 막는 안전띠다.
+/// 30 → 50(개발 9, 사장: «굳이 30 막아야 하나»).
+pub(crate) const DAILY_CAP: i64 = 50;
+const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 /// 부탁에 줄 수 있는 도구 — 빈 값 = 대화만. 더 늘릴 땐 이 목록에 한 줄(PLAN §9-2: 카드에서 명시한 것만).
 pub(crate) const TOOL_CHOICES: [&str; 2] = ["", "WebSearch"];
 /// 부탁을 받을 수 있는 쪽. 스키마 1 의 CHECK 와 같다.
@@ -238,16 +242,17 @@ fn first_at(input: &ErrandInput) -> i64 {
     if fits(input.start_at) {
         input.start_at
     } else {
-        next_occurrence(&input.repeat, input.start_at, input.start_at).unwrap_or(input.start_at)
+        next_occurrence(&input.repeat, input.start_at, input.start_at, None).unwrap_or(input.start_at)
     }
 }
 
 /// 반복 규칙의 다음 회차 (순수 — 테스트 가능): `start_at` 의 **로컬 벽시계 시각**을 지키며 `start_at` 과 `after` 둘 다보다 뒤인 첫 회차.
 /// 서머타임으로 그 시각이 두 번이면 앞의 것, 없으면(건너뛴 한 시간) 한 시간 뒤. 400일 안에 없으면 None.
-pub(crate) fn next_occurrence(rule: &str, start_at: i64, after: i64) -> Option<i64> {
-    use chrono::{Datelike, Duration as CDuration, Local, TimeZone, Weekday};
+/// `wall` = 지키려는 벽시계 시각(`errands.wall_time`) — 앞 회차가 서머타임으로 밀렸으면 그 회차의 시각이 아니라 이것을 쓴다.
+pub(crate) fn next_occurrence(rule: &str, start_at: i64, after: i64, wall: Option<&str>) -> Option<i64> {
+    use chrono::{Datelike, Duration as CDuration, Local, NaiveTime, TimeZone, Weekday};
     let start = Local.timestamp_millis_opt(start_at).earliest()?;
-    let time = start.time();
+    let time = wall.and_then(|w| NaiveTime::parse_from_str(w, "%H:%M:%S").ok()).unwrap_or(start.time());
     let after_day = Local.timestamp_millis_opt(after).earliest()?.date_naive();
     let mut day = start.date_naive().succ_opt()?.max(after_day);
     for _ in 0..400 {
@@ -271,6 +276,17 @@ pub(crate) fn next_occurrence(rule: &str, start_at: i64, after: i64) -> Option<i
         day = day.succ_opt()?;
     }
     None
+}
+
+/// 다음 회차가 서머타임으로 밀렸으면 지키려던 벽시계 시각(`HH:MM:SS`) — 그다음 회차가 밀린 시각을 베끼지 않게. 제 시각이면 None.
+fn shifted_wall(start_at: i64, at: i64, wall: Option<&str>) -> Option<String> {
+    use chrono::{Local, TimeZone};
+    let want = match wall {
+        Some(w) => w.to_string(),
+        None => Local.timestamp_millis_opt(start_at).earliest()?.format("%H:%M:%S").to_string(),
+    };
+    let got = Local.timestamp_millis_opt(at).earliest()?.format("%H:%M:%S").to_string();
+    (got != want).then_some(want)
 }
 
 /// 꼬리 글자 `n` 개만.
@@ -352,6 +368,8 @@ struct NewErrand<'a> {
     folder_id: Option<i64>,
     parent_run_id: Option<i64>,
     depth: i64,
+    /// 서머타임으로 밀린 회차의 원래 벽시계 시각(`next_occurrence` 의 `wall`).
+    wall_time: Option<String>,
 }
 
 fn insert_errand(tx: &rusqlite::Connection, n: &NewErrand, now: i64) -> rusqlite::Result<i64> {
@@ -365,8 +383,8 @@ fn insert_errand(tx: &rusqlite::Connection, n: &NewErrand, now: i64) -> rusqlite
     let series = n.series_id.or(n.rrule.map(|_| id));
     tx.execute(
         "INSERT INTO errands (item_id, target, prompt, allowed_tools, late, approved_at, parent_run_id, depth,
-                              series_id, carry, resume_run_id, folder_id, resume_session)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                              series_id, carry, resume_run_id, folder_id, resume_session, wall_time)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             id,
             n.target,
@@ -380,7 +398,8 @@ fn insert_errand(tx: &rusqlite::Connection, n: &NewErrand, now: i64) -> rusqlite
             n.carry,
             n.resume_run_id,
             n.folder_id,
-            n.resume_session
+            n.resume_session,
+            n.wall_time
         ],
     )?;
     Ok(id)
@@ -427,6 +446,7 @@ impl Store {
                 folder_id: resume.as_ref().map(|r| r.0),
                 parent_run_id: None,
                 depth: 0,
+                wall_time: None,
             };
             let id = insert_errand(&tx, &n, now).map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
@@ -468,35 +488,41 @@ impl Store {
                 return Err("이미 돈 부탁은 고칠 수 없어요 — 새로 만들어 주세요".into());
             }
             // 잇는 대화(만들 때 베낀 번호)가 있으면 받는 쪽·반복을 못 바꾼다 — 부모 실행이 지워져 `resume_run_id` 가 NULL 이어도.
-            let cur: Option<(Option<i64>, Option<String>, String)> = tx
-                .query_row("SELECT resume_run_id, resume_session, target FROM errands WHERE item_id = ?1", [id], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-                })
+            let cur: Option<(Option<i64>, Option<String>, String, i64)> = tx
+                .query_row(
+                    "SELECT e.resume_run_id, e.resume_session, e.target, i.start_at FROM errands e JOIN items i ON i.id = e.item_id
+                     WHERE e.item_id = ?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
                 .optional()
                 .map_err(|e| e.to_string())?;
-            let (resume_run, resume_session, target) = cur.ok_or("이미 지워진 부탁이에요")?;
+            let (resume_run, resume_session, target, old_start) = cur.ok_or("이미 지워진 부탁이에요")?;
             let input = ErrandInput { resume_run_id: resume_run, ..input.clone() };
             let (prompt, title) = validate(&input)?;
             if resume_session.is_some() && (input.target != target || !input.repeat.is_empty()) {
                 return Err("이어서 하는 부탁은 받는 쪽·반복을 바꿀 수 없어요".into());
             }
             let rrule = Some(input.repeat.as_str()).filter(|r| !r.is_empty());
+            let start_at = first_at(&input);
             let n = tx
                 .execute(
                     "UPDATE items SET title = ?2, start_at = ?3, end_at = ?3, rrule = ?4, updated_at = ?5
                      WHERE id = ?1 AND kind = 'errand' AND deleted_at IS NULL",
-                    params![id, title, first_at(&input), rrule, now_ms()],
+                    params![id, title, start_at, rrule, now_ms()],
                 )
                 .map_err(|e| e.to_string())?;
             if n == 0 {
                 return Err("이미 지워진 부탁이에요".into());
             }
             // 반복을 새로 걸면 이 줄이 묶음의 첫 줄이 된다(이미 묶음이면 그대로).
+            // 사람이 시각을 옮기면 그 시각이 새 기준이다 — 서머타임으로 밀렸던 원래 시각(`wall_time`)은 버린다.
             tx.execute(
                 "UPDATE errands SET prompt = ?2, allowed_tools = ?3, late = ?4, target = ?5, carry = ?6,
-                        series_id = CASE WHEN ?7 THEN COALESCE(series_id, item_id) ELSE series_id END
+                        series_id = CASE WHEN ?7 THEN COALESCE(series_id, item_id) ELSE series_id END,
+                        wall_time = CASE WHEN ?8 THEN NULL ELSE wall_time END
                  WHERE item_id = ?1",
-                params![id, prompt, input.allowed_tools, input.late, input.target, input.carry, rrule.is_some()],
+                params![id, prompt, input.allowed_tools, input.late, input.target, input.carry, rrule.is_some(), start_at != old_start],
             )
             .map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
@@ -576,6 +602,8 @@ impl Store {
     /// 예약 실행인데 이미 돌았으면(또는 수동 요청 뒤에 다른 실행이 시작했으면) `None` — 그 값으로 실행 기록을 연다.
     /// 대기하는 동안 사람이 고치거나 지운 부탁이 옛 문장으로 나가지 않게 하는 문이다. `sent_text` = 지금 문장 그대로.
     /// `skip` 이 이유를 돌려주면 돌리지 않고 «건너뜀» 으로 바로 닫는다. 돌려주는 bool = 건너뜀 여부.
+    /// 예약 실행은 하루 상한(`DAILY_CAP`)도 여기서 본다 — 지금 값으로 «돌 것인가» 를 가린 뒤 같은 트랜잭션에서 세야, 목록을 읽은 뒤
+    /// «놓치면» 이 바뀌어도 상한을 넘지 않는다(코덱스 개발 5 3차). 상한이면 `None`(대기로 남는다). 건너뜀은 상한과 무관하게 기록한다.
     ///
     /// 개발 7: 이을 대화(`Due::session`)도 여기서 정한다 — 반복의 «지난 대화» 는 바로 앞 회차의 답이 와야 생긴다.
     /// 그리고 **반복의 다음 회차가 처음 돌기 시작하면**(예약·수동·건너뜀 모두) 같은 트랜잭션에서 그다음 회차를 만들고 규칙을 넘긴다.
@@ -592,7 +620,7 @@ impl Store {
             .query_row(
                 &format!(
                     "SELECT {DUE_COLS}, i.title, i.rrule, e.series_id, e.carry, e.resume_session, e.approved_at,
-                            e.parent_run_id, e.depth, i.origin
+                            e.parent_run_id, e.depth, i.origin, e.wall_time
                      FROM items i JOIN errands e ON e.item_id = i.id
                      WHERE i.id = ?1 AND i.kind = 'errand' AND i.deleted_at IS NULL AND e.approved_at IS NOT NULL"
                 ),
@@ -606,13 +634,13 @@ impl Store {
                         r.get::<_, bool>(10)?,
                         r.get::<_, Option<String>>(11)?,
                         r.get::<_, i64>(12)?,
-                        (r.get::<_, Option<i64>>(13)?, r.get::<_, i64>(14)?, r.get::<_, String>(15)?),
+                        (r.get::<_, Option<i64>>(13)?, r.get::<_, i64>(14)?, r.get::<_, String>(15)?, r.get::<_, Option<String>>(16)?),
                     ))
                 },
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        let Some((mut due, title, rrule, series, carry, resume_session, approved_at, (parent_run, depth, origin))) = due else {
+        let Some((mut due, title, rrule, series, carry, resume_session, approved_at, (parent_run, depth, origin, wall))) = due else {
             return Ok(None);
         };
         let (running, any_since, any): (bool, bool, bool) = tx
@@ -639,6 +667,14 @@ impl Store {
             }
         };
         let reason = if matches!(claim, Claim::Scheduled) { skip(&due, late_ms) } else { None };
+        if matches!(claim, Claim::Scheduled) && reason.is_none() {
+            let ran: i64 = tx
+                .query_row("SELECT COUNT(*) FROM runs WHERE started_at >= ?1 AND status != 'skipped'", [now - DAY_MS], |r| r.get(0))
+                .map_err(|e| e.to_string())?;
+            if ran >= DAILY_CAP {
+                return Ok(None);
+            }
+        }
         // 이을 대화: «이어서 부탁» 이면 그 실행의 대화, 반복의 «지난 대화 이어서» 면 같은 묶음·같은 쪽에서 가장 최근 답의 대화.
         due.session = match (resume_session, carry, series) {
             (Some(s), _, _) => Some(s),
@@ -675,7 +711,7 @@ impl Store {
         let run_id = tx.last_insert_rowid();
         // 반복: 이 회차가 처음 도는 순간 다음 회차를 만든다. «지금 이후» 로 잡아 놓친 회차를 몰아 돌리지 않는다.
         if let (Some(rule), false) = (rrule.as_deref(), any) {
-            match next_occurrence(rule, due.start_at, now.max(due.start_at)) {
+            match next_occurrence(rule, due.start_at, now.max(due.start_at), wall.as_deref()) {
                 Some(at) => {
                     let n = NewErrand {
                         title: &title,
@@ -694,6 +730,7 @@ impl Store {
                         folder_id: Some(series.unwrap_or(id)),
                         parent_run_id: parent_run,
                         depth,
+                        wall_time: shifted_wall(due.start_at, at, wall.as_deref()),
                     };
                     insert_errand(&tx, &n, now).map_err(|e| e.to_string())?;
                     tx.execute("UPDATE items SET rrule = NULL WHERE id = ?1", [id]).map_err(|e| e.to_string())?;
@@ -750,6 +787,38 @@ impl Store {
             .map_err(|e| e.to_string())
     }
 
+    /// 한 부탁의 실행 기록 전부, 최근 것부터(상한 50). «다시 실행» 해도 앞 답을 다시 열 수 있게 — 시트는 맨 앞(= `Errand::run`)을 빼고 보인다
+    /// (코덱스 개발 7·8 P2). 지운 부탁도 휴지통에 있는 동안은 읽힌다(시트가 열린 채 지워질 수 있다).
+    pub(crate) fn list_runs(&self, item_id: i64) -> Result<Vec<RunView>, String> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT id, status, started_at, finished_at, late_ms, sent_text, response, stderr, read_at, resumed_session, session_id
+                 FROM runs WHERE item_id = ?1 ORDER BY id DESC LIMIT 50",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([item_id], |r| {
+                let status: String = r.get(1)?;
+                Ok(RunView {
+                    id: r.get(0)?,
+                    can_resume: status == "done" && r.get::<_, Option<String>>(10)?.is_some(),
+                    status,
+                    started_at: r.get(2)?,
+                    finished_at: r.get(3)?,
+                    late_ms: r.get(4)?,
+                    sent_text: r.get(5)?,
+                    response: r.get(6)?,
+                    stderr: r.get(7)?,
+                    read: r.get::<_, Option<i64>>(8)?.is_some(),
+                    resumed: r.get::<_, Option<String>>(9)?.is_some(),
+                })
+            })
+            .and_then(|it| it.collect::<rusqlite::Result<Vec<_>>>())
+            .map_err(|e| e.to_string())?;
+        Ok(rows)
+    }
+
     pub(crate) fn mark_run_read(&self, run_id: i64) -> Result<(), String> {
         self.conn()
             .execute("UPDATE runs SET read_at = ?2 WHERE id = ?1 AND read_at IS NULL", params![run_id, now_ms()])
@@ -768,13 +837,6 @@ impl Store {
     pub(crate) fn is_running(&self, item_id: i64) -> Result<bool, String> {
         self.conn()
             .query_row("SELECT EXISTS (SELECT 1 FROM runs WHERE item_id = ?1 AND status = 'running')", [item_id], |r| r.get(0))
-            .map_err(|e| e.to_string())
-    }
-
-    /// `since` 이후 실제로 돈(건너뜀 제외) 실행 수 — 하루 상한 계산.
-    pub(crate) fn runs_since(&self, since: i64) -> Result<i64, String> {
-        self.conn()
-            .query_row("SELECT COUNT(*) FROM runs WHERE started_at >= ?1 AND status != 'skipped'", [since], |r| r.get(0))
             .map_err(|e| e.to_string())
     }
 
@@ -990,6 +1052,7 @@ impl Store {
                 folder_id: resume.as_ref().map(|r| r.0),
                 parent_run_id: p.parent_run_id,
                 depth: p.depth,
+                wall_time: None,
             };
             let errand_id = insert_errand(&tx, &n, now).map_err(|e| e.to_string())?;
             tx.execute(
@@ -1162,7 +1225,36 @@ mod tests {
         let r = s.get_errand(e.id).unwrap().unwrap().run.unwrap();
         assert_eq!(r.status, "failed");
         assert!(r.finished_at.is_some());
-        assert_eq!(s.runs_since(0).unwrap(), 1);
+    }
+
+    #[test]
+    fn earlier_answers_stay_readable_after_rerun() {
+        let s = Store::open_in_memory();
+        let e = s.create_errand(&input("두 번", 1_000)).unwrap();
+        let first = s.begin_run(e.id, "두 번", 0, None).unwrap();
+        s.finish_run(first, &Outcome { status: "done", exit_code: Some(0), response: Some("첫 답".into()), stderr: None, session_id: Some("s".into()) })
+            .unwrap();
+        let second = s.begin_run(e.id, "두 번", 0, None).unwrap();
+        let runs = s.list_runs(e.id).unwrap();
+        assert_eq!(runs.iter().map(|r| r.id).collect::<Vec<_>>(), vec![second, first], "최근 것부터");
+        assert_eq!((runs[1].response.as_deref(), runs[1].can_resume), (Some("첫 답"), true));
+        assert_eq!(s.get_errand(e.id).unwrap().unwrap().run.unwrap().id, second, "목록의 run 은 맨 앞과 같다");
+    }
+
+    #[test]
+    fn daily_cap_holds_scheduled_runs_but_not_skips_or_manual() {
+        let s = Store::open_in_memory();
+        let filler = s.create_errand(&input("채움", 1_000)).unwrap();
+        for _ in 0..DAILY_CAP {
+            s.begin_run(filler.id, "채움", 0, None).unwrap();
+        }
+        let due = s.create_errand(&input("때 됨", now_ms() - 1_000)).unwrap();
+        assert!(s.claim_run(due.id, Claim::Scheduled, |_, _| None).unwrap().is_none(), "상한이면 대기로 남는다");
+        assert!(s.get_errand(due.id).unwrap().unwrap().run.is_none());
+        let (_, _, skipped) = s.claim_run(due.id, Claim::Scheduled, |_, _| Some("놓침")).unwrap().unwrap();
+        assert!(skipped, "건너뜀은 상한과 무관하게 기록한다");
+        let manual = s.create_errand(&input("손으로", now_ms() + 3_600_000)).unwrap();
+        assert!(s.claim_run(manual.id, Claim::Manual { since: 0 }, |_, _| None).unwrap().is_some(), "사람이 누른 건 막지 않는다");
     }
 
     fn prop(prompt: &str, at: i64, from: Option<i64>) -> ErrandProposalInput {
@@ -1288,14 +1380,52 @@ mod tests {
     #[test]
     fn next_occurrence_keeps_wall_clock_and_rule() {
         let mon9 = local(2026, 10, 5, 9, 0); // 월요일
-        assert_eq!(next_occurrence("FREQ=DAILY", mon9, mon9), Some(local(2026, 10, 6, 9, 0)));
-        assert_eq!(next_occurrence("FREQ=WEEKLY", mon9, mon9), Some(local(2026, 10, 12, 9, 0)));
+        assert_eq!(next_occurrence("FREQ=DAILY", mon9, mon9, None), Some(local(2026, 10, 6, 9, 0)));
+        assert_eq!(next_occurrence("FREQ=WEEKLY", mon9, mon9, None), Some(local(2026, 10, 12, 9, 0)));
         let fri9 = local(2026, 10, 9, 9, 0);
-        assert_eq!(next_occurrence("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR", fri9, fri9), Some(local(2026, 10, 12, 9, 0)), "금 → 월");
+        assert_eq!(next_occurrence("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR", fri9, fri9, None), Some(local(2026, 10, 12, 9, 0)), "금 → 월");
         // 사흘 놓쳤으면 «지금 이후» 첫 회차 하나 — 몰아 돌리지 않는다.
-        assert_eq!(next_occurrence("FREQ=DAILY", mon9, local(2026, 10, 8, 10, 0)), Some(local(2026, 10, 9, 9, 0)));
-        assert_eq!(next_occurrence("FREQ=DAILY", mon9, local(2026, 10, 8, 8, 0)), Some(local(2026, 10, 8, 9, 0)));
-        assert_eq!(next_occurrence("FREQ=MONTHLY", mon9, mon9), None, "모르는 규칙은 없다");
+        assert_eq!(next_occurrence("FREQ=DAILY", mon9, local(2026, 10, 8, 10, 0), None), Some(local(2026, 10, 9, 9, 0)));
+        assert_eq!(next_occurrence("FREQ=DAILY", mon9, local(2026, 10, 8, 8, 0), None), Some(local(2026, 10, 8, 9, 0)));
+        assert_eq!(next_occurrence("FREQ=MONTHLY", mon9, mon9, None), None, "모르는 규칙은 없다");
+    }
+
+    #[test]
+    fn dst_gap_shifts_one_occurrence_not_the_series() {
+        // 서머타임이 있는 시간대에서만 보이는 일 — 같은 테스트를 TZ 를 바꾼 새 프로세스로 다시 돌린다(Local 은 프로세스 전체 설정이다).
+        const NAME: &str = "errands::tests::dst_gap_shifts_one_occurrence_not_the_series";
+        if std::env::var("TZ").as_deref() != Ok("America/New_York") {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([NAME, "--exact", "--test-threads=1"])
+                .env("TZ", "America/New_York")
+                .output()
+                .unwrap();
+            let log = String::from_utf8_lossy(&out.stdout);
+            assert!(out.status.success() && log.contains("1 passed"), "{log}{}", String::from_utf8_lossy(&out.stderr));
+            return;
+        }
+        // 2027-03-14 뉴욕은 02:00 → 03:00. 매일 02:30 은 그날만 03:30 이 되고, 다음 날은 다시 02:30 이어야 한다.
+        let sat = local(2027, 3, 13, 2, 30);
+        let sun = next_occurrence("FREQ=DAILY", sat, sat, None).unwrap();
+        assert_eq!(sun, local(2027, 3, 14, 3, 30));
+        let wall = shifted_wall(sat, sun, None);
+        assert_eq!(wall.as_deref(), Some("02:30:00"));
+        assert_eq!(next_occurrence("FREQ=DAILY", sun, sun, None), Some(local(2027, 3, 15, 3, 30)), "고치기 전: 밀린 시각이 굳는다");
+        let mon = next_occurrence("FREQ=DAILY", sun, sun, wall.as_deref()).unwrap();
+        assert_eq!(mon, local(2027, 3, 15, 2, 30));
+        assert_eq!(shifted_wall(sun, mon, wall.as_deref()), None, "제 시각으로 돌아오면 지운다");
+
+        // 저장소를 거쳐서도 — 회차가 돌 때 만들어지는 다음 회차들.
+        let s = Store::open_in_memory();
+        let mut i = input("새벽 정리", sat);
+        i.repeat = "FREQ=DAILY".into();
+        let head = s.create_errand(&i).unwrap();
+        s.claim_run(head.id, Claim::Manual { since: 0 }, |_, _| None).unwrap().unwrap();
+        let second = s.list_errands(sat, local(2027, 3, 20, 0, 0)).unwrap().into_iter().find(|e| e.id != head.id).unwrap();
+        assert_eq!(second.start_at, sun);
+        s.claim_run(second.id, Claim::Manual { since: 0 }, |_, _| None).unwrap().unwrap();
+        let third = s.list_errands(sat, local(2027, 3, 20, 0, 0)).unwrap().into_iter().find(|e| e.id != head.id && e.id != second.id).unwrap();
+        assert_eq!(third.start_at, mon, "다음 회차는 원래 시각으로");
     }
 
     #[test]

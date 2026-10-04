@@ -68,12 +68,50 @@ export function nextHour(now: Date): Date {
   return d;
 }
 
-export const fmt = {
+const makeFmt = () => ({
   monthDay: new Intl.DateTimeFormat("ko-KR", { month: "long", day: "numeric" }),
   weekday: new Intl.DateTimeFormat("ko-KR", { weekday: "long" }),
   weekdayShort: new Intl.DateTimeFormat("ko-KR", { weekday: "short" }),
   yearMonth: new Intl.DateTimeFormat("ko-KR", { year: "numeric", month: "long" }),
   time: new Intl.DateTimeFormat("ko-KR", { hour: "numeric", minute: "2-digit" }),
+});
+type Fmt = ReturnType<typeof makeFmt>;
+
+// 포매터는 만들 때의 시간대에 묶인다 — 팝오버가 며칠 떠 있는 동안 시간대를 바꾸면(여행) `Date` 는 새 시간대인데 글자는 옛 시간대가 된다
+// (코덱스 개발 5 P2). 1초에 한 번만 시간대를 물어 바뀌었으면 다시 만든다(줄마다 부르는 것이라 매번 묻지 않는다).
+const zoneNow = () => new Intl.DateTimeFormat().resolvedOptions().timeZone;
+let made: Fmt = makeFmt();
+let madeZone = zoneNow();
+let checkedAt = 0;
+function current(): Fmt {
+  const t = Date.now();
+  if (t - checkedAt > 1000) {
+    checkedAt = t;
+    const z = zoneNow();
+    if (z !== madeZone) {
+      made = makeFmt();
+      madeZone = z;
+    }
+  }
+  return made;
+}
+
+export const fmt: Fmt = {
+  get monthDay() {
+    return current().monthDay;
+  },
+  get weekday() {
+    return current().weekday;
+  },
+  get weekdayShort() {
+    return current().weekdayShort;
+  },
+  get yearMonth() {
+    return current().yearMonth;
+  },
+  get time() {
+    return current().time;
+  },
 };
 
 /** 다음 자정까지 남은 ms. 팝오버는 며칠씩 떠 있을 수 있어 날짜가 스스로 넘어가야 한다. */

@@ -618,6 +618,9 @@ function App() {
 
   return (
     <main className="relative flex h-screen w-full flex-col overflow-hidden rounded-lg bg-canvas text-ink">
+      {/* 시트가 떠 있으면 뒤는 손이 안 닿는다(inert) — 탭·클릭으로 제안 카드 «고치기» 등을 눌러 시트가 겹치지 않게(코덱스 개발 8).
+          contents = 상자를 안 만들어 아래 줄들이 그대로 main 의 flex 에 선다. */}
+      <div className="contents" inert={!!(sheet || errandSheet)}>
       <header className="shrink-0 px-5 pt-6">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -766,6 +769,7 @@ function App() {
         today={today}
         onCommit={quickCommit}
       />
+      </div>
 
       {sheet && (
         <>

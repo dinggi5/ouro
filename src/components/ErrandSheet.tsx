@@ -7,10 +7,12 @@ import { useEffect, useRef, useState } from "react";
 import { combine, hm, ymd } from "../lib/time";
 import {
   durationLabel,
+  errandApi,
   LATE_OPTIONS,
   lateLabel,
   REPEAT_OPTIONS,
   repeatLabel,
+  runLabel,
   stateLabel,
   stateOf,
   TARGET_OPTIONS,
@@ -18,6 +20,7 @@ import {
   TOOL_OPTIONS,
   type Errand,
   type ErrandInput,
+  type Run,
   type Target,
 } from "../lib/errands";
 import { fmt } from "../lib/time";
@@ -36,6 +39,9 @@ export type ErrandDraft = {
   resumeTitle: string | null;
   /** 앞 대화를 잇는다 — 받는 쪽·반복 잠금과 안내는 이것으로 본다(부모가 지워져 resumeRunId 가 null 이어도 참). */
   resumes: boolean;
+  /** 고치는 부탁의 원래 순간. 날짜·시각 칸을 안 건드렸으면 이 값을 그대로 쓴다 — 글만 고쳐도 초가 지워지거나
+   *  가을 서머타임의 두 번째 01:30 이 앞의 01:30 으로 당겨지지 않게(EventSheet 와 같은 규칙, 코덱스 개발 6). */
+  orig?: { key: string; startAt: number };
 };
 
 export function blankErrandDraft(at: Date, target: Target = "claude"): ErrandDraft {
@@ -68,6 +74,7 @@ export function errandInputToDraft(e: ErrandInput, resumeTitle: string | null = 
     resumeRunId: e.resumeRunId,
     resumeTitle,
     resumes,
+    orig: { key: `${ymd(d)} ${hm(d)}`, startAt: e.startAt },
   };
 }
 
@@ -75,7 +82,7 @@ export const errandToDraft = (e: Errand): ErrandDraft => errandInputToDraft(e, e
 
 function toInput(d: ErrandDraft): ErrandInput | string {
   if (!d.prompt.trim()) return "부탁할 말을 적어 주세요";
-  const at = combine(d.date, d.time);
+  const at = d.orig && `${d.date} ${d.time}` === d.orig.key ? new Date(d.orig.startAt) : combine(d.date, d.time);
   if (!at) return "없는 날짜·시각이에요 — 확인해 주세요";
   return {
     prompt: d.prompt,
@@ -131,6 +138,21 @@ export function ErrandSheet({
   const [busy, setBusy] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
   const viewing = !!errand?.run;
+  // 지난 실행 — «다시 실행» 하면 맨 앞 답이 바뀌어도 앞 답을 다시 열 수 있게(코덱스 개발 7·8). 맨 앞(= errand.run)은 빼고 보인다.
+  const [history, setHistory] = useState<Run[]>([]);
+  const runKey = errand?.run ? `${errand.id}:${errand.run.id}:${errand.run.status}` : null;
+  useEffect(() => {
+    if (!runKey || !errand) return;
+    let live = true;
+    errandApi
+      .runs(errand.id)
+      .then((rs) => live && setHistory(rs))
+      .catch(() => live && setHistory([]));
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runKey 가 errand.id·최근 실행을 담는다
+  }, [runKey]);
   // 고치는 중이면 «지금 실행» 은 막는다 — 실행은 저장된 문장으로 나가니 화면의 문장과 어긋난다(코덱스 개발 5).
   const dirty = JSON.stringify(d) !== JSON.stringify(initial);
 
@@ -182,6 +204,7 @@ export function ErrandSheet({
     const run = errand.run;
     const st = stateOf(errand);
     const late = lateLabel(run.lateMs);
+    const older = history.filter((r) => r.id !== run.id && r.status !== "running");
     const meta = [
       targetLabel(errand.target),
       fmt.time.format(run.startedAt),
@@ -221,6 +244,26 @@ export function ErrandSheet({
               {run.sentText}
             </p>
           </details>
+
+          {older.length > 0 && (
+            <details>
+              <summary className="num cursor-pointer text-caption text-ink-muted marker:content-none">지난 실행 {older.length}</summary>
+              <ul className="mt-2 flex flex-col gap-2">
+                {older.map((r) => (
+                  <li key={r.id}>
+                    <details className="rounded-md bg-surface-sunken px-3 py-2.5">
+                      <summary className="num cursor-pointer text-caption text-ink-secondary marker:content-none">
+                        {fmt.monthDay.format(r.startedAt)} {fmt.time.format(r.startedAt)} · {runLabel(r)}
+                      </summary>
+                      <p className="select-text mt-2 whitespace-pre-wrap break-words text-caption text-ink">
+                        {r.status === "done" ? r.response : r.status === "stopped" ? "중단했어요." : (r.stderr ?? "이유를 남기지 못했어요")}
+                      </p>
+                    </details>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
         </div>
         <footer className="flex shrink-0 flex-col gap-2 px-5 pb-5">
           {errorLine}
