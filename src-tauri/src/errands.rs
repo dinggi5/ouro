@@ -35,6 +35,8 @@ const STDERR_MAX: usize = 2_000;
 /// 30 → 50(개발 9, 사장: «굳이 30 막아야 하나»).
 pub(crate) const DAILY_CAP: i64 = 50;
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+/// 켤 때 «도는 중» 으로 남은 실행을 닫는 이유(`fail_orphan_runs`) — 남긴 답 복구가 이 줄을 알아본다.
+const ORPHAN_REASON: &str = "앱이 꺼지면서 끊겼어요";
 /// 부탁에 줄 수 있는 도구 — 빈 값 = 대화만. 더 늘릴 땐 이 목록에 한 줄(PLAN §9-2: 카드에서 명시한 것만).
 pub(crate) const TOOL_CHOICES: [&str; 2] = ["", "WebSearch"];
 /// 부탁을 받을 수 있는 쪽. 스키마 1 의 CHECK 와 같다.
@@ -776,25 +778,32 @@ impl Store {
             .map_err(|e| e.to_string())
     }
 
-    /// 지난번에 DB 에 못 적어 파일로 남긴 답(`dispatch::recover_pending`) — 아직 «도는 중» 인 실행에만 넣는다. 넣었으면 true.
+    /// 지난번에 DB 에 못 적어 파일로 남긴 답(`dispatch::recover_pending`)을 넣는다. 넣을 곳 = 아직 «도는 중» 이거나, 복구가 한 번 실패한 사이
+    /// 켤 때 «끊김» 으로 닫힌 실행(코덱스 개발 9 2차 — 안 그러면 다음 켤 때 «이미 닫힘» 으로 보고 파일만 지웠다). 남긴 파일은 DB 에 못 적었을 때만
+    /// 생기므로, 진짜로 실패한 실행을 덮는 일은 없다. 넣었으면 true, 넣을 곳이 없으면(지워졌거나 이미 답이 있음) false — 둘 다 파일을 지워도 된다.
     pub(crate) fn finish_pending_run(&self, run_id: i64, o: &Outcome) -> Result<bool, String> {
-        let running: bool = self
+        let open: bool = self
             .conn()
-            .query_row("SELECT EXISTS (SELECT 1 FROM runs WHERE id = ?1 AND status = 'running')", [run_id], |r| r.get(0))
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM runs WHERE id = ?1 AND response IS NULL
+                                  AND (status = 'running' OR (status = 'failed' AND stderr = ?2)))",
+                params![run_id, ORPHAN_REASON],
+                |r| r.get(0),
+            )
             .map_err(|e| e.to_string())?;
-        if running {
+        if open {
             self.finish_run(run_id, o)?;
         }
-        Ok(running)
+        Ok(open)
     }
 
     /// 앱이 꺼진 채 «도는 중» 으로 남은 기록 — 프로세스는 이미 없다. 실패로 닫는다.
     pub(crate) fn fail_orphan_runs(&self) -> Result<usize, String> {
         self.conn()
             .execute(
-                "UPDATE runs SET status = 'failed', finished_at = ?1, stderr = '앱이 꺼지면서 끊겼어요'
+                "UPDATE runs SET status = 'failed', finished_at = ?1, stderr = ?2
                  WHERE status = 'running'",
-                [now_ms()],
+                params![now_ms(), ORPHAN_REASON],
             )
             .map_err(|e| e.to_string())
     }

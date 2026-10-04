@@ -65,7 +65,7 @@ pub(crate) async fn check_update(app: AppHandle, state: State<'_, PendingUpdate>
     // 잠금은 await 뒤에만 잡는다(std Mutex 가드를 await 너머로 들고 가지 않는다).
     let mut slot = state.0.lock().map_err(|_| "업데이트 상태가 깨졌어요".to_string())?;
     // 확인하는 사이에 설치가 시작됐으면 후보를 바꾸지 않는다 — 설치는 이미 옛 후보를 꺼내 갔고, 받다 실패하면 그것을 되돌린다.
-    // 여기서 새 버전으로 덮으면 화면은 새 버전, 슬롯은 옛 버전이 된다(코덱스 개발 9). 설치 시작은 슬롯 잠금 안에서 꺼내므로 이 확인과 겹치지 않는다.
+    // 여기서 새 버전으로 덮으면 화면은 새 버전, 슬롯은 옛 버전이 된다(코덱스 개발 9). 설치는 이 잠금 안에서 플래그를 세우므로 확인과 겹치지 않는다.
     if state.1.load(Ordering::SeqCst) {
         return Err("업데이트를 설치하는 중이에요".into());
     }
@@ -94,8 +94,12 @@ pub(crate) async fn install_update(
     state: State<'_, PendingUpdate>,
     core: State<'_, crate::CoreState>,
 ) -> Result<(), String> {
-    if state.1.swap(true, Ordering::SeqCst) {
-        return Err("이미 설치하는 중이에요".into());
+    // 플래그는 슬롯 잠금 안에서 세운다 — `check_update` 도 같은 잠금 안에서 플래그를 보고 후보를 쓰므로 둘이 줄을 선다(코덱스 개발 9 2차).
+    {
+        let _slot = state.0.lock().map_err(|_| "업데이트 상태가 깨졌어요".to_string())?;
+        if state.1.swap(true, Ordering::SeqCst) {
+            return Err("이미 설치하는 중이에요".into());
+        }
     }
     let r = install(&app, &state, core.inner().as_ref().ok()).await;
     // 여기로 돌아왔다면 실패다(성공하면 restart 가 돌아오지 않는다).

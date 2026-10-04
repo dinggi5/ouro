@@ -895,6 +895,8 @@ mod tests {
         let file = d.path().join("pending").join(format!("{run}.json"));
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        // 복구가 한 번 실패한 사이 켤 때 «끊김» 으로 닫혔어도 넣는다.
+        store.fail_orphan_runs().unwrap();
         recover_pending(&store, d.path());
         let r = store.get_errand(e.id).unwrap().unwrap().run.unwrap();
         assert_eq!((r.status.as_str(), r.response.as_deref(), r.can_resume), ("done", Some("디스크가 찼던 답"), true));
