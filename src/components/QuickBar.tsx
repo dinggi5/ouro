@@ -109,7 +109,9 @@ export function QuickBar({
             onText("");
           }
         }}
-        placeholder="새 일정 — 내일 3시 치과  ·  부탁 — 매일 9시 … 클로드한테"
+        // 자리표시는 짧게(사장, 개발 8 뒤 — 예시 두 줄이 거추장스러웠다). 쓰는 법은 마우스를 올리면 보인다.
+        placeholder="새 일정 입력하기"
+        title="«내일 3시 치과» 처럼 날짜와 함께 · «매일 9시 … 클로드한테» 는 부탁"
         maxLength={200}
         aria-label="빠른 입력"
         className="h-11 w-full rounded-md bg-surface-sunken px-4 text-body-sm text-ink outline-none transition-shadow duration-100 placeholder:text-ink-muted focus:shadow-[inset_0_0_0_1.5px_var(--ink-secondary)]"
