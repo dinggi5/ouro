@@ -9,6 +9,7 @@
 // 설계 결정:
 //   · 도크 아이콘 없음(ActivationPolicy::Accessory, lib.rs). Kura 는 승인 팝업을 끌어올릴 두 번째 길로
 //     도크를 남겼지만, 캘린더는 그런 시한이 없고 메뉴바 앱이 도크에 앉아 있으면 «조용히 머문다» 가 깨진다.
+//     예외 하나: «크게 보기» 창이 열린 동안만 Regular 다(wide.rs, 개발 12).
 //   · 팝오버 위치는 TrayIcon::rect() 로 직접 계산한다 → 위치 플러그인 의존성 0.
 //   · blur = 숨김. 다른 창을 누르면 팝오버는 물러난다(메뉴바 팝오버의 관용).
 
@@ -359,19 +360,21 @@ pub(crate) fn on_blur<R: Runtime>(win: &Window<R>) {
     }
 }
 
-/// 메뉴바 아이콘을 만든다. 좌클릭 = 팝오버 토글, 우클릭 = 메뉴(열기·iCloud 동기화·업데이트 확인·종료).
+/// 메뉴바 아이콘을 만든다. 좌클릭 = 팝오버 토글, 우클릭 = 메뉴(열기·크게 보기·iCloud 동기화·업데이트 확인·종료).
 /// 도크 아이콘이 없으니 종료할 길은 이 메뉴와 ⌘Q 뿐이다 — 빼지 말 것.
 pub(crate) fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let open_i = MenuItem::with_id(app, "open", "Ouro 열기", true, None::<&str>)?;
+    // 크게 보기(개발 12) — 같은 화면을 넓은 창으로. 열린 동안만 도크에 보인다(wide.rs).
+    let wide_i = MenuItem::with_id(app, "wide", "크게 보기", true, None::<&str>)?;
     // 업데이트 확인은 팝오버를 띄우고 프론트에게 «지금 확인» 을 알린다 — 결과(노트·설치 버튼)는 팝오버가 보인다(update.rs).
     let update_i = MenuItem::with_id(app, "update", "업데이트 확인…", true, None::<&str>)?;
     let quit_i = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
     // iCloud 동기화(개발 10)는 헬퍼(OuroSync.app)가 든 앱에만 메뉴가 있다 — 없는 기능을 내밀지 않는다.
     let sync_i = MenuItem::with_id(app, "sync", "iCloud 동기화…", true, None::<&str>)?;
     let menu = if crate::sync::find_helper().is_some() {
-        Menu::with_items(app, &[&open_i, &sync_i, &update_i, &quit_i])?
+        Menu::with_items(app, &[&open_i, &wide_i, &sync_i, &update_i, &quit_i])?
     } else {
-        Menu::with_items(app, &[&open_i, &update_i, &quit_i])?
+        Menu::with_items(app, &[&open_i, &wide_i, &update_i, &quit_i])?
     };
 
     TrayIconBuilder::with_id(TRAY_ID)
@@ -383,6 +386,7 @@ pub(crate) fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => show(app),
+            "wide" => crate::wide::open(app),
             "update" => {
                 show(app);
                 let _ = app.emit("update-check", ());

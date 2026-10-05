@@ -144,6 +144,7 @@ export function EventSheet({
   onSave,
   onDelete,
   onClose,
+  docked = false,
 }: {
   initial: Draft;
   editing: OuroEvent | null;
@@ -154,6 +155,8 @@ export function EventSheet({
   onSave: (input: EventInput) => Promise<string | null>;
   onDelete: () => void;
   onClose: () => void;
+  /** 크게 보기 창의 오른쪽 칸에 붙어 있다(개발 12) — 올라오는 모션·둥근 위 모서리 없이 칸을 꽉 채운다. */
+  docked?: boolean;
 }) {
   const [d, setD] = useState<Draft>(initial);
   const [error, setError] = useState<string | null>(null);
@@ -194,7 +197,7 @@ export function EventSheet({
         // ⌘↩ = 메모 칸 안에서도 저장. 그냥 ↩ 는 메모에선 줄바꿈, 다른 칸에선 form 이 알아서 제출한다.
         if (e.key === "Enter" && e.metaKey) void submit();
       }}
-      className="sheet-in absolute inset-x-0 bottom-0 top-3 flex flex-col rounded-t-xl bg-surface"
+      className={docked ? "absolute inset-0 flex flex-col bg-surface" : "sheet-in absolute inset-x-0 bottom-0 top-3 flex flex-col rounded-t-xl bg-surface"}
       aria-label={editing ? "일정 고치기" : "새 일정"}
     >
       <header className="flex h-12 shrink-0 items-center justify-between px-5">

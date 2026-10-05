@@ -1,5 +1,8 @@
 // 앱 루트 — 오늘/주/월 세 보기 + 일정 시트 + 빠른 입력 + 되돌리기 토스트.
 //
+// 같은 화면이 두 창에 뜬다(개발 12): 팝오버(`main`, 420×640)와 크게 보기(`wide`, wide.rs). 크게 보기는 세 칸이다 —
+// 왼쪽 월 달력 · 가운데 하루/주(팝오버 몸통 그대로) · 오른쪽 고른 항목(시트를 덮어 띄우지 않고 칸에 붙인다).
+//
 // 상태는 둘뿐이다: 보기(view) 와 커서(cursor, 고른 날). 세 보기가 같은 커서를 공유해서, 월에서 고른 날로
 // «오늘» 탭을 누르면 그날 목록이 뜬다. 일정은 보기마다 필요한 창만 러스트에서 불러온다 — 캐시를 두지 않는다
 // (쓰는 곳이 앱 하나라 목록이 틀릴 일이 없고, DB 가 로컬이라 한 번 읽는 데 1ms 도 안 걸린다).
@@ -7,6 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import "./App.css";
 import { DayList } from "./components/DayList";
 import { MonthGrid, monthGridRange } from "./components/MonthGrid";
@@ -53,6 +57,11 @@ const VIEWS: { id: View; label: string }[] = [
   { id: "week", label: "주" },
   { id: "month", label: "월" },
 ];
+
+/** 크게 보기 창인가. 창 이름은 웹뷰가 뜰 때 받은 메타데이터라 IPC·권한 없이 읽힌다. */
+const WIDE = getCurrentWebviewWindow().label === "wide";
+/** 크게 보기는 월이 왼쪽 칸에 늘 있으니 가운데는 하루·주 둘. */
+const TABS = WIDE ? VIEWS.filter((v) => v.id !== "month") : VIEWS;
 
 /** 지금. 자정에 넘어가고, 창이 다시 보일 때도 다시 읽는다 — 맥이 잠든 사이 타이머는 늦게 깨므로 타이머 하나만 믿지 않는다.
  *  1분마다도 갱신한다 — 지난 일정을 흐리게 하는 기준이라서. */
@@ -127,7 +136,7 @@ type Toast = { text: string; undo?: () => void; key: number };
 function App() {
   const now = useNow();
   const today = startOfDay(now);
-  const [view, setView] = useState<View>("day");
+  const [view, setView] = useState<View>(WIDE ? "week" : "day");
   const [cursor, setCursor] = useState<Date>(today);
   const [events, setEvents] = useState<OuroEvent[]>([]);
   const [fatal, setFatal] = useState<string | null>(null);
@@ -189,7 +198,8 @@ function App() {
     };
   }, [loadClients]);
 
-  const [from, to] = useMemo(() => rangeOf(view, cursor), [view, cursor]);
+  // 크게 보기는 왼쪽 월 달력의 점까지 그려야 하니 늘 월 격자 창(6주)을 읽는다 — 고른 날의 주는 그 안에 있다.
+  const [from, to] = useMemo(() => rangeOf(WIDE ? "month" : view, cursor), [view, cursor]);
   // 늦게 온 답은 버린다 — 다른 날로 넘긴 뒤 앞 날의 느린 답이 목록을 덮지 않게(코덱스 개발 4). 제안도 같은 규칙.
   const eventsSeq = useRef(0);
   const reload = useCallback(async () => {
@@ -256,6 +266,23 @@ function App() {
       unlisten?.();
     };
   }, [loadProposals]);
+
+  // 다른 창(팝오버 ↔ 크게 보기)에서 사람이 바꾼 것 — 러스트가 «data-changed» 로 알린다(lib.rs `touched`).
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let alive = true;
+    listen("data-changed", () => {
+      void reload();
+      loadProposals();
+    }).then(
+      (u) => (alive ? (unlisten = u) : u()),
+      () => {},
+    );
+    return () => {
+      alive = false;
+      unlisten?.();
+    };
+  }, [reload, loadProposals]);
 
   const showToast = useCallback((text: string, undo?: () => void) => {
     setToast({ text, undo, key: Date.now() });
@@ -377,7 +404,8 @@ function App() {
   const addNew = (kind: "event" | "errand") => {
     setAddMenu(false);
     // 시트가 이미 열려 있으면 겹쳐 열지 않는다(시트 뒤 + 로 탭 이동해 올 수 있다 — 코덱스 개발 8).
-    if (sheet || errandSheet) return;
+    // 크게 보기는 시트가 덮지 않고 오른쪽 칸에 붙어 있다 — 새로 만들면 그 칸을 바꾼다.
+    if (!WIDE && (sheet || errandSheet)) return;
     // 업데이트를 받는 중이면 곧 다시 켜진다 — 쓰던 초안이 사라지니 새로 쓰기 시작하지 않게(코덱스 개발 8 P1).
     if (update.installing) {
       showToast("업데이트를 설치하는 중이에요");
@@ -575,6 +603,16 @@ function App() {
     }
   };
 
+  // 크게 보기의 오른쪽 칸은 하나 — 일정과 부탁 중 나중에 연 것만 남긴다(팝오버는 시트가 덮어서 둘이 같이 열릴 일이 없다).
+  useEffect(() => {
+    if (WIDE && sheet) setErrandSheet(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 새로 열 때(key)만
+  }, [sheet?.key]);
+  useEffect(() => {
+    if (WIDE && errandSheet) setSheet(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 새로 열 때(key)만
+  }, [errandSheet?.key]);
+
   const step = useCallback(
     (dir: -1 | 1) => {
       setCursor((c) => (view === "day" ? addDays(c, dir) : view === "week" ? addDays(c, 7 * dir) : addMonths(c, dir)));
@@ -602,8 +640,8 @@ function App() {
         const k = e.key.toLowerCase();
         if (k === "w") {
           e.preventDefault();
-          void invoke("hide_popover");
-        } else if (k === "n" && !sheet && !errandSheet) {
+          void invoke("close_window");
+        } else if (k === "n" && (WIDE || (!sheet && !errandSheet))) {
           e.preventDefault();
           quickRef.current?.focus();
         }
@@ -615,7 +653,8 @@ function App() {
         else setErrandSheet(null);
         return;
       }
-      if (sheet || errandSheet || typing || e.metaKey || e.ctrlKey || e.altKey) return;
+      // 크게 보기는 오른쪽 칸이 열려 있어도 날짜를 넘길 수 있다(덮는 시트가 아니라서).
+      if ((!WIDE && (sheet || errandSheet)) || typing || e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === "ArrowLeft") step(-1);
       else if (e.key === "ArrowRight") step(1);
       else if (e.key === "t" || e.key === "T") setCursor(today);
@@ -631,12 +670,74 @@ function App() {
   const queue = useMemo(() => queueOf(proposals, errandProposals), [proposals, errandProposals]);
   const top = queue[0];
 
+  const sheets = WIDE ? null : (
+    <>
+      {sheet && (
+        <>
+          <div className="scrim-in absolute inset-0 bg-black/30" onClick={() => setSheet(null)} />
+          <EventSheet
+            key={sheet.key}
+            initial={sheet.draft}
+            editing={sheet.editing}
+            notice={sheet.notice}
+            heading={sheet.proposalId !== undefined ? "제안 고치기" : undefined}
+            onSave={save}
+            onDelete={() => void remove()}
+            onClose={() => setSheet(null)}
+          />
+        </>
+      )}
+
+      {errandSheet && (
+        <>
+          <div className="scrim-in absolute inset-0 bg-black/30" onClick={() => setErrandSheet(null)} />
+          <ErrandSheet
+            key={errandSheet.key}
+            errand={openSheetErrand}
+            initial={errandSheet.draft}
+            notice={errandSheet.notice}
+            proposal={errandSheet.proposalId !== undefined}
+            onSave={saveErrand}
+            onDelete={() => void removeErrand()}
+            onRunNow={errandAction(() => errandApi.runNow(errandSheet.id as number))}
+            onStop={errandAction(() => errandApi.stop(openSheetErrand?.run?.id ?? 0))}
+            onFollowUp={() => openSheetErrand && followUp(openSheetErrand)}
+            onClose={() => setErrandSheet(null)}
+          />
+        </>
+      )}
+    </>
+  );
+
   return (
-    <main className="relative flex h-screen w-full flex-col overflow-hidden rounded-lg bg-canvas text-ink">
+    <main className={`relative flex h-screen w-full overflow-hidden bg-canvas text-ink ${WIDE ? "" : "rounded-lg"}`}>
+      {WIDE && (
+        <aside className="flex w-72 shrink-0 flex-col border-r border-hairline px-5 pt-10" data-tauri-drag-region>
+          <div className="flex items-center justify-between" data-tauri-drag-region>
+            <h2 className="num text-label font-semibold" data-tauri-drag-region>
+              {fmt.yearMonth.format(cursor)}
+            </h2>
+            <div className="flex items-center">
+              <IconButton label="지난달" onClick={() => setCursor((c) => addMonths(c, -1))}>
+                <path d="M10 3.5 5.5 8l4.5 4.5" />
+              </IconButton>
+              <IconButton label="다음 달" onClick={() => setCursor((c) => addMonths(c, 1))}>
+                <path d="M6 3.5 10.5 8 6 12.5" />
+              </IconButton>
+            </div>
+          </div>
+          <div className="mt-3">
+            <MonthGrid cursor={cursor} today={today} events={events} errands={errands} onPick={setCursor} />
+          </div>
+        </aside>
+      )}
+
+      {/* 가운데 = 팝오버 몸통. 팝오버에선 이 칸이 창 전체다. */}
+      <div className="relative flex min-w-0 flex-1 flex-col">
       {/* 시트가 떠 있으면 뒤는 손이 안 닿는다(inert) — 탭·클릭으로 제안 카드 «고치기» 등을 눌러 시트가 겹치지 않게(코덱스 개발 8).
-          contents = 상자를 안 만들어 아래 줄들이 그대로 main 의 flex 에 선다. */}
-      <div className="contents" inert={!!(sheet || errandSheet)}>
-      <header className="shrink-0 px-5 pt-6">
+          contents = 상자를 안 만들어 아래 줄들이 그대로 이 칸의 flex 에 선다. 크게 보기는 덮는 시트가 없어 막지 않는다. */}
+      <div className="contents" inert={!WIDE && !!(sheet || errandSheet)}>
+      <header className={`shrink-0 px-5 ${WIDE ? "pt-10" : "pt-6"}`} data-tauri-drag-region={WIDE || undefined}>
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h1 className="num truncate text-subheading font-semibold">{t.main}</h1>
@@ -652,6 +753,11 @@ function App() {
                 오늘
               </button>
             )}
+            {!WIDE && (
+              <IconButton label="크게 보기" onClick={() => void invoke("open_wide")}>
+                <path d="M9.5 3.5h3v3M12.5 3.5 9 7M6.5 12.5h-3v-3M3.5 12.5 7 9" />
+              </IconButton>
+            )}
             <IconButton label="새로 만들기" onClick={() => setAddMenu((o) => !o)}>
               <path d="M8 3.5v9M3.5 8h9" />
             </IconButton>
@@ -664,8 +770,8 @@ function App() {
           </div>
         </div>
 
-        <div role="tablist" className="mt-5 grid grid-cols-3 rounded-md bg-surface-sunken p-1">
-          {VIEWS.map((v) => (
+        <div role="tablist" className={`mt-5 grid rounded-md bg-surface-sunken p-1 ${WIDE ? "grid-cols-2" : "grid-cols-3"}`}>
+          {TABS.map((v) => (
             <button
               key={v.id}
               type="button"
@@ -789,40 +895,7 @@ function App() {
       />
       </div>
 
-      {sheet && (
-        <>
-          <div className="scrim-in absolute inset-0 bg-black/30" onClick={() => setSheet(null)} />
-          <EventSheet
-            key={sheet.key}
-            initial={sheet.draft}
-            editing={sheet.editing}
-            notice={sheet.notice}
-            heading={sheet.proposalId !== undefined ? "제안 고치기" : undefined}
-            onSave={save}
-            onDelete={() => void remove()}
-            onClose={() => setSheet(null)}
-          />
-        </>
-      )}
-
-      {errandSheet && (
-        <>
-          <div className="scrim-in absolute inset-0 bg-black/30" onClick={() => setErrandSheet(null)} />
-          <ErrandSheet
-            key={errandSheet.key}
-            errand={openSheetErrand}
-            initial={errandSheet.draft}
-            notice={errandSheet.notice}
-            proposal={errandSheet.proposalId !== undefined}
-            onSave={saveErrand}
-            onDelete={() => void removeErrand()}
-            onRunNow={errandAction(() => errandApi.runNow(errandSheet.id as number))}
-            onStop={errandAction(() => errandApi.stop(openSheetErrand?.run?.id ?? 0))}
-            onFollowUp={() => openSheetErrand && followUp(openSheetErrand)}
-            onClose={() => setErrandSheet(null)}
-          />
-        </>
-      )}
+      {sheets}
 
       {addMenu && (
         <>
@@ -856,6 +929,51 @@ function App() {
             </button>
           )}
         </div>
+      )}
+      </div>
+
+      {WIDE && (
+        <aside className="relative w-[400px] shrink-0 border-l border-hairline bg-surface" aria-label="고른 항목">
+          {sheet || errandSheet ? (
+            <div className="absolute inset-x-0 top-7 bottom-0">
+              {sheet && (
+                <EventSheet
+                  key={sheet.key}
+                  docked
+                  initial={sheet.draft}
+                  editing={sheet.editing}
+                  notice={sheet.notice}
+                  heading={sheet.proposalId !== undefined ? "제안 고치기" : undefined}
+                  onSave={save}
+                  onDelete={() => void remove()}
+                  onClose={() => setSheet(null)}
+                />
+              )}
+
+              {errandSheet && (
+                <ErrandSheet
+                  key={errandSheet.key}
+                  docked
+                  errand={openSheetErrand}
+                  initial={errandSheet.draft}
+                  notice={errandSheet.notice}
+                  proposal={errandSheet.proposalId !== undefined}
+                  onSave={saveErrand}
+                  onDelete={() => void removeErrand()}
+                  onRunNow={errandAction(() => errandApi.runNow(errandSheet.id as number))}
+                  onStop={errandAction(() => errandApi.stop(openSheetErrand?.run?.id ?? 0))}
+                  onFollowUp={() => openSheetErrand && followUp(openSheetErrand)}
+                  onClose={() => setErrandSheet(null)}
+                />
+              )}
+            </div>
+          ) : (
+            <p className="absolute inset-0 flex items-center justify-center px-10 text-center text-caption text-ink-muted">
+              일정이나 부탁을 고르면 여기에 보여요
+            </p>
+          )}
+          <div className="absolute inset-x-0 top-0 h-7" data-tauri-drag-region />
+        </aside>
       )}
     </main>
   );

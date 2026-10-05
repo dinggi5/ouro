@@ -11,6 +11,7 @@
 //   mcp     MCP 사이드카가 묻는 소켓 — 읽기·제안만, 승인은 팝오버에서 (개발 4)
 //   update  인앱 업데이트 — 확인은 저절로, 설치는 사람이 노트를 보고 누를 때만 (개발 8)
 //   sync    iCloud 동기화의 앱 쪽 — 바뀐 줄 장부·레코드 변환·합치기·헬퍼(OuroSync.app) 관리·실행 맥 (개발 10)
+//   wide    «크게 보기» 창 — 같은 화면을 넓게, 열린 동안만 도크에 (개발 12)
 //
 // 이 파일에는 앱 셸만 둔다: 커맨드(프론트가 부르는 문) + run(). 판단은 전부 모듈에 있다.
 
@@ -25,6 +26,7 @@ mod store;
 mod sync;
 mod tray;
 mod update;
+mod wide;
 
 use std::sync::Arc;
 
@@ -48,6 +50,13 @@ pub(crate) struct Core {
 }
 
 pub(crate) type CoreState = Result<Core, String>;
+
+/// 사람이 화면에서 무언가를 바꿨다 — **다른 창**(팝오버 ↔ 크게 보기)도 다시 읽게 알린다(개발 12).
+/// 바꾼 창은 제 손으로 이미 다시 읽지만, 같이 떠 있는 다른 창은 focus 가 올 때까지 옛 목록을 보인다.
+/// 웹뷰엔 emit 권한을 주지 않으므로(capabilities) 알림은 러스트가 낸다.
+fn touched(app: &tauri::AppHandle) {
+    let _ = app.emit("data-changed", ());
+}
 
 fn core<'a>(state: &'a State<'_, CoreState>) -> Result<&'a Core, String> {
     state.inner().as_ref().map_err(Clone::clone)
@@ -136,31 +145,38 @@ fn list_errands(state: State<'_, CoreState>, from: i64, to: i64) -> Result<Vec<E
 
 /// 사람이 쓴 부탁을 만든다. 🔴 문장은 사람이 쓴 것(AI 답·일정 글이 아니다) — AI 가 낸 부탁은 `approve_errand_proposal` 로만 들어온다.
 #[tauri::command]
-fn create_errand(state: State<'_, CoreState>, input: ErrandInput) -> Result<Errand, String> {
+fn create_errand(app: tauri::AppHandle, state: State<'_, CoreState>, input: ErrandInput) -> Result<Errand, String> {
     let c = core(&state)?;
     let e = c.store.create_errand(&input)?;
     c.dispatcher.poke();
+    touched(&app);
     Ok(e)
 }
 
 #[tauri::command]
-fn update_errand(state: State<'_, CoreState>, id: i64, input: ErrandInput) -> Result<Errand, String> {
+fn update_errand(app: tauri::AppHandle, state: State<'_, CoreState>, id: i64, input: ErrandInput) -> Result<Errand, String> {
     let c = core(&state)?;
     let e = c.store.update_errand(id, &input)?;
     c.dispatcher.poke();
+    touched(&app);
     Ok(e)
 }
 
 #[tauri::command]
-fn delete_errand(state: State<'_, CoreState>, id: i64) -> Result<(), String> {
-    core(&state)?.store.delete_errand(id)
+fn delete_errand(app: tauri::AppHandle, state: State<'_, CoreState>, id: i64) -> Result<(), String> {
+    let r = core(&state)?.store.delete_errand(id);
+    if r.is_ok() {
+        touched(&app);
+    }
+    r
 }
 
 #[tauri::command]
-fn restore_errand(state: State<'_, CoreState>, id: i64) -> Result<Errand, String> {
+fn restore_errand(app: tauri::AppHandle, state: State<'_, CoreState>, id: i64) -> Result<Errand, String> {
     let c = core(&state)?;
     let e = c.store.restore_errand(id)?;
     c.dispatcher.poke();
+    touched(&app);
     Ok(e)
 }
 
@@ -196,8 +212,12 @@ fn list_runs(state: State<'_, CoreState>, id: i64) -> Result<Vec<errands::RunVie
 }
 
 #[tauri::command]
-fn mark_run_read(state: State<'_, CoreState>, run_id: i64) -> Result<(), String> {
-    core(&state)?.store.mark_run_read(run_id)
+fn mark_run_read(app: tauri::AppHandle, state: State<'_, CoreState>, run_id: i64) -> Result<(), String> {
+    let r = core(&state)?.store.mark_run_read(run_id);
+    if r.is_ok() {
+        touched(&app);
+    }
+    r
 }
 
 /// 오늘 브리핑(로컬 계산 — 바깥으로 안 나간다).
@@ -208,8 +228,12 @@ fn briefing(state: State<'_, CoreState>) -> Result<brief::Briefing, String> {
 
 /// 아침 브리핑 알림 켬/끔.
 #[tauri::command]
-fn set_morning_briefing(state: State<'_, CoreState>, on: bool) -> Result<(), String> {
-    core(&state)?.store.set_setting(brief::KEY_ON, if on { "on" } else { "off" })
+fn set_morning_briefing(app: tauri::AppHandle, state: State<'_, CoreState>, on: bool) -> Result<(), String> {
+    let r = core(&state)?.store.set_setting(brief::KEY_ON, if on { "on" } else { "off" });
+    if r.is_ok() {
+        touched(&app);
+    }
+    r
 }
 
 /// 창 [from, to) (UTC ms) 에 걸치는 일정.
@@ -219,24 +243,30 @@ fn list_events(state: State<'_, CoreState>, from: i64, to: i64) -> Result<Vec<Ev
 }
 
 #[tauri::command]
-fn create_event(state: State<'_, CoreState>, input: EventInput) -> Result<Event, String> {
+fn create_event(app: tauri::AppHandle, state: State<'_, CoreState>, input: EventInput) -> Result<Event, String> {
     let c = core(&state)?;
     let e = c.store.create_event(&input)?;
     c.alerts.poke();
+    touched(&app);
     Ok(e)
 }
 
 #[tauri::command]
-fn update_event(state: State<'_, CoreState>, id: i64, input: EventInput) -> Result<Event, String> {
+fn update_event(app: tauri::AppHandle, state: State<'_, CoreState>, id: i64, input: EventInput) -> Result<Event, String> {
     let c = core(&state)?;
     let e = c.store.update_event(id, &input)?;
     c.alerts.poke();
+    touched(&app);
     Ok(e)
 }
 
 #[tauri::command]
-fn delete_event(state: State<'_, CoreState>, id: i64) -> Result<(), String> {
-    core(&state)?.store.delete_event(id)
+fn delete_event(app: tauri::AppHandle, state: State<'_, CoreState>, id: i64) -> Result<(), String> {
+    let r = core(&state)?.store.delete_event(id);
+    if r.is_ok() {
+        touched(&app);
+    }
+    r
 }
 
 /// 빠른 입력 한 줄 → 초안. 저장하지 않는다(프론트가 카드로 보여 주고, 확정하면 `create_event` 로 온다).
@@ -261,10 +291,11 @@ fn backup_error(state: State<'_, CoreState>) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-fn restore_event(state: State<'_, CoreState>, id: i64) -> Result<Event, String> {
+fn restore_event(app: tauri::AppHandle, state: State<'_, CoreState>, id: i64) -> Result<Event, String> {
     let c = core(&state)?;
     let e = c.store.restore_event(id)?;
     c.alerts.poke();
+    touched(&app);
     Ok(e)
 }
 
@@ -288,16 +319,21 @@ fn list_proposals(state: State<'_, CoreState>) -> Result<Vec<ProposalCard>, Stri
 
 /// 사람이 제안을 받는다(팝오버의 «넣기»·«고쳐서 넣기»). 🔴 제안이 일정이 되는 **유일한** 길 — 소켓엔 이 문이 없다(mcp.rs).
 #[tauri::command]
-fn approve_proposal(state: State<'_, CoreState>, id: i64, input: Option<EventInput>) -> Result<Event, String> {
+fn approve_proposal(app: tauri::AppHandle, state: State<'_, CoreState>, id: i64, input: Option<EventInput>) -> Result<Event, String> {
     let c = core(&state)?;
     let e = c.store.approve_proposal(id, input.as_ref())?;
     c.alerts.poke();
+    touched(&app);
     Ok(e)
 }
 
 #[tauri::command]
-fn reject_proposal(state: State<'_, CoreState>, id: i64) -> Result<(), String> {
-    core(&state)?.store.reject_proposal(id)
+fn reject_proposal(app: tauri::AppHandle, state: State<'_, CoreState>, id: i64) -> Result<(), String> {
+    let r = core(&state)?.store.reject_proposal(id);
+    if r.is_ok() {
+        touched(&app);
+    }
+    r
 }
 
 #[tauri::command]
@@ -308,16 +344,21 @@ fn list_errand_proposals(state: State<'_, CoreState>) -> Result<Vec<ErrandPropos
 /// 사람이 부탁 제안을 승인한다(팝오버의 «승인»·«고쳐서 승인»). 🔴 AI 가 낸 글이 부탁이 되는 **유일한** 길 — 소켓엔 이 문이 없다(mcp.rs).
 /// 승인된 부탁은 때가 되면 돈다 — 디스패처를 깨워 다음 예약 시각을 다시 보게 한다.
 #[tauri::command]
-fn approve_errand_proposal(state: State<'_, CoreState>, id: i64, input: Option<ErrandInput>) -> Result<Errand, String> {
+fn approve_errand_proposal(app: tauri::AppHandle, state: State<'_, CoreState>, id: i64, input: Option<ErrandInput>) -> Result<Errand, String> {
     let c = core(&state)?;
     let e = c.store.approve_errand_proposal(id, input.as_ref())?;
     c.dispatcher.poke();
+    touched(&app);
     Ok(e)
 }
 
 #[tauri::command]
-fn reject_errand_proposal(state: State<'_, CoreState>, id: i64) -> Result<(), String> {
-    core(&state)?.store.reject_errand_proposal(id)
+fn reject_errand_proposal(app: tauri::AppHandle, state: State<'_, CoreState>, id: i64) -> Result<(), String> {
+    let r = core(&state)?.store.reject_errand_proposal(id);
+    if r.is_ok() {
+        touched(&app);
+    }
+    r
 }
 
 /// 소켓을 연다. 새 제안이 오면 팝오버를 띄우고 화면에 알린다(떠 있던 팝오버는 focus 이벤트가 안 오니 이벤트로).
@@ -330,7 +371,10 @@ fn start_socket(app: &tauri::AppHandle) {
         let h = handle.clone();
         let _ = handle.run_on_main_thread(move || match change {
             mcp::Change::Proposal => {
-                tray::show(&h);
+                // 크게 보기를 보고 있으면 그 창이 카드를 보인다 — 팝오버를 겹쳐 띄우지 않는다.
+                if !wide::is_front(&h) {
+                    tray::show(&h);
+                }
                 let _ = h.emit("proposals-changed", ());
             }
             mcp::Change::Presence => {
@@ -349,11 +393,21 @@ fn mcp_clients(state: State<'_, CoreState>) -> Result<Vec<String>, String> {
     Ok(core(&state)?.presence.clients(std::time::Instant::now()))
 }
 
-/// ⌘W 로 팝오버를 닫는다. 창이 테두리 없음이라 ⌘W 가 러스트의 CloseRequested 까지 오지 않아
-/// 프론트가 직접 부른다(App.tsx). 종착지는 트레이 클릭과 같은 `tray::hide`.
+/// ⌘W — 부른 창을 닫는다. 팝오버는 테두리 없음이라 ⌘W 가 러스트의 CloseRequested 까지 오지 않아
+/// 프론트가 직접 부른다(App.tsx). 팝오버의 종착지는 트레이 클릭과 같은 `tray::hide`, 크게 보기는 창을 없앤다.
 #[tauri::command]
-fn hide_popover(app: tauri::AppHandle) {
-    tray::hide(&app);
+fn close_window(window: tauri::Window) {
+    if window.label() == wide::LABEL {
+        let _ = window.close();
+    } else {
+        tray::hide(window.app_handle());
+    }
+}
+
+/// 팝오버의 «펼치기» — 크게 보기 창을 연다.
+#[tauri::command]
+fn open_wide(app: tauri::AppHandle) {
+    wide::open(&app);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -382,19 +436,34 @@ pub fn run() {
             // 숨으면 켜도 아무 일도 안 일어난 것처럼 보인다 — 적어도 켠 순간엔 보이게.
             // (로그인 자동 시작이 붙으면 그 경로에선 조용히 뜨게 갈라야 한다.)
             tray::show_at_launch(app.handle());
+            // 디버그 빌드만: 켜자마자 크게 보기를 연다 — 메뉴바를 누를 수 없는 자동 확인용(OURO_HOME 과 같은 결).
+            #[cfg(debug_assertions)]
+            if std::env::var_os("OURO_OPEN_WIDE").is_some() {
+                wide::open(app.handle());
+            }
             Ok(())
         })
-        .on_window_event(|window, event| match event {
-            // 창 닫기는 종료가 아니라 숨기기 — 메뉴바에 계속 산다. 완전 종료는 ⌘Q 또는 트레이 메뉴 «종료».
-            tauri::WindowEvent::CloseRequested { api, .. } => {
-                api.prevent_close();
-                tray::hide(window.app_handle());
+        .on_window_event(|window, event| {
+            // 크게 보기 창은 보통 창이다 — 닫으면 없어지고(도크에서도 빠진다), 포커스를 잃어도 그대로 있다.
+            if window.label() == wide::LABEL {
+                if let tauri::WindowEvent::Destroyed = event {
+                    wide::on_closed(window.app_handle());
+                }
+                return;
             }
-            tauri::WindowEvent::Focused(false) => tray::on_blur(window),
-            _ => {}
+            match event {
+                // 팝오버 닫기는 종료가 아니라 숨기기 — 메뉴바에 계속 산다. 완전 종료는 ⌘Q 또는 트레이 메뉴 «종료».
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    tray::hide(window.app_handle());
+                }
+                tauri::WindowEvent::Focused(false) => tray::on_blur(window),
+                _ => {}
+            }
         })
         .invoke_handler(tauri::generate_handler![
-            hide_popover,
+            close_window,
+            open_wide,
             list_events,
             list_errands,
             create_errand,
@@ -433,8 +502,11 @@ pub fn run() {
         .run(|app, event| {
             // 도크 아이콘이 없어도 Finder·Spotlight 로 이미 켜진 앱을 다시 열면 이 이벤트가 온다
             // (applicationShouldHandleReopen) — 트레이가 노치 뒤에 숨었을 때의 두 번째 길.
+            // 크게 보기가 열려 있으면(= 도크에 아이콘이 있을 때) 도크 클릭은 그 창으로.
             if let tauri::RunEvent::Reopen { .. } = event {
-                tray::show(app);
+                if !wide::raise(app) {
+                    tray::show(app);
+                }
             }
             // 끌 때 도는 `claude` 가 앱보다 오래 살지 않게 먼저 멈춘다(코덱스 개발 5).
             if let tauri::RunEvent::Exit = event {

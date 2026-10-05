@@ -118,6 +118,7 @@ export function ErrandSheet({
   onStop,
   onFollowUp,
   onClose,
+  docked = false,
 }: {
   /** 이미 있는 부탁이면 그것(App 이 목록에서 늘 최신으로 넘긴다 — 도는 중 → 답이 오면 이 시트가 따라 바뀐다). 새 부탁이면 null. */
   errand: Errand | null;
@@ -132,6 +133,8 @@ export function ErrandSheet({
   /** 답 시트의 «이어서 부탁» — 이 답의 대화를 잇는 새 부탁 시트를 연다. */
   onFollowUp: () => void;
   onClose: () => void;
+  /** 크게 보기 창의 오른쪽 칸에 붙어 있다(개발 12) — 올라오는 모션·둥근 위 모서리 없이 칸을 꽉 채운다. */
+  docked?: boolean;
 }) {
   const [d, setD] = useState<ErrandDraft>(initial);
   const [error, setError] = useState<string | null>(null);
@@ -214,7 +217,7 @@ export function ErrandSheet({
       errand.series ? "반복" : null,
     ].filter(Boolean);
     return (
-      <section className="sheet-in absolute inset-x-0 bottom-0 top-3 flex flex-col rounded-t-xl bg-surface" aria-label="부탁과 답">
+      <section className={docked ? "absolute inset-0 flex flex-col bg-surface" : "sheet-in absolute inset-x-0 bottom-0 top-3 flex flex-col rounded-t-xl bg-surface"} aria-label="부탁과 답">
         {header("부탁")}
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 pb-4">
           <div>
@@ -300,7 +303,7 @@ export function ErrandSheet({
       onKeyDown={(e) => {
         if (e.key === "Enter" && e.metaKey) submit();
       }}
-      className="sheet-in absolute inset-x-0 bottom-0 top-3 flex flex-col rounded-t-xl bg-surface"
+      className={docked ? "absolute inset-0 flex flex-col bg-surface" : "sheet-in absolute inset-x-0 bottom-0 top-3 flex flex-col rounded-t-xl bg-surface"}
       aria-label={proposal ? "제안 고치기" : errand ? "부탁 고치기" : "새 부탁"}
     >
       {header(proposal ? "제안 고치기" : errand ? "부탁" : "새 부탁")}
