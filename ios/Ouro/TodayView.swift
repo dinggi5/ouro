@@ -190,7 +190,7 @@ struct DayList: View {
                             Text(e.title).font(.body17).foregroundStyle(Color.ink).lineLimit(1)
                             Spacer(minLength: 8)
                             if let r = e.run, r.status == "done", !r.read {
-                                Text("답").font(.label).foregroundStyle(Color.ai)
+                                Text("답").font(.label).foregroundStyle(Color.ai).accessibilityLabel("안 읽음")
                             }
                         }
                     }

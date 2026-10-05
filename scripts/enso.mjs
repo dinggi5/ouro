@@ -17,7 +17,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const SHU = "#C9472B"; // 朱 — 라이트 액센트(App.css --accent)
+const SHU = "#BF4329"; // 朱 — 라이트 액센트(App.css --accent)
 const KINARI = "#F7F4EC"; // 生成り — 라이트 바탕(App.css --canvas)
 
 const R = 9.5;

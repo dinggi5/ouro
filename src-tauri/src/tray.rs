@@ -418,25 +418,33 @@ pub(crate) fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 }
 
 /// 부탁 상태가 바뀌었을 수 있다 — DB 를 한 번 보고 메뉴바 엔소를 맞춘다. 같은 모양이면 건드리지 않는다
-/// (부탁·동기화·사람 손 모든 길에서 불리니 잦다). 어느 스레드에서 불러도 된다(set_icon 이 메인 스레드로 넘긴다).
+/// (부탁·동기화·사람 손 모든 길에서 불리니 잦다). 어느 스레드에서 불러도 된다.
+///
+/// 🔴 일은 통째로 **메인 스레드에 맡기고 기다리지 않는다**(코덱스 개발 13 1차 P1). `set_icon` 은 메인 스레드에 일을 보내고
+/// 끝나길 기다리므로, 잠금을 쥔 채 백그라운드(디스패처)에서 부르면 같은 잠금을 기다리는 메인 스레드(동기 커맨드의 `touched`)와
+/// 서로를 기다린다. 메인 스레드에서 부르면 바로 돈다(tauri-runtime-wry 가 같은 스레드면 줄 세우지 않는다). 한 줄로 서니
+/// 늦게 읽은 DB 가 늘 마지막에 칠한다 — 순서가 뒤집힐 일도 없다.
 pub(crate) fn refresh_mark<R: Runtime>(app: &AppHandle<R>) {
-    static LAST: Mutex<Option<TrayMark>> = Mutex::new(None);
-    let Some(Ok(core)) = app.try_state::<crate::CoreState>().map(|s| s.inner().as_ref()) else { return };
-    let Ok(mark) = core.store.tray_mark() else { return };
-    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
-    if *last == Some(mark) {
-        return;
-    }
-    let bytes = match mark {
-        TrayMark::Idle => ICON_IDLE,
-        TrayMark::Running => ICON_RUNNING,
-        TrayMark::Answered => ICON_DONE,
-    };
-    let (Some(tray), Ok(img)) = (app.tray_by_id(TRAY_ID), Image::from_bytes(bytes)) else { return };
-    // 아이콘을 바꾸면 템플릿 표시가 풀리는 플랫폼이 있어 매번 다시 건다.
-    if tray.set_icon(Some(img)).is_ok() && tray.set_icon_as_template(true).is_ok() {
-        *last = Some(mark);
-    }
+    let h = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        thread_local! {
+            static LAST: std::cell::Cell<Option<TrayMark>> = const { std::cell::Cell::new(None) };
+        }
+        let Some(Ok(core)) = h.try_state::<crate::CoreState>().map(|s| s.inner().as_ref()) else { return };
+        let Ok(mark) = core.store.tray_mark() else { return };
+        if LAST.get() == Some(mark) {
+            return;
+        }
+        let bytes = match mark {
+            TrayMark::Idle => ICON_IDLE,
+            TrayMark::Running => ICON_RUNNING,
+            TrayMark::Answered => ICON_DONE,
+        };
+        let (Some(tray), Ok(img)) = (h.tray_by_id(TRAY_ID), Image::from_bytes(bytes)) else { return };
+        if tray.set_icon_with_as_template(Some(img), true).is_ok() {
+            LAST.set(Some(mark));
+        }
+    });
 }
 
 #[cfg(test)]

@@ -14,9 +14,9 @@ extension Color {
     static let hairline = dyn(0xE3DED2, 0x38352F)
     static let ink = dyn(0x22201C, 0xECE7DC)
     static let inkSecondary = dyn(0x57524A, 0xA39D92)
-    static let inkMuted = dyn(0x8C867B, 0x757066)
+    static let inkMuted = dyn(0x726C61, 0x908A7E)
     /// 朱 — AI 가 관여한 것(부탁·답·제안)에만.
-    static let ai = dyn(0xC9472B, 0xE98466)
+    static let ai = dyn(0xBF4329, 0xE98466)
 }
 
 extension UIColor {
@@ -43,6 +43,8 @@ extension Font {
 struct ErrandMark: View {
     let status: String?
     var size: CGFloat = 12
+    /// 목록 행에선 VoiceOver 가 상태를 읽는다(맥의 «대기 · 도는 중 …» 줄과 같은 말, 코덱스 개발 13 1차). 카드 머리 같은 장식 자리는 false.
+    var spoken = true
     var body: some View {
         ZStack {
             switch status {
@@ -60,7 +62,21 @@ struct ErrandMark: View {
             }
         }
         .frame(width: size, height: size)
-        .accessibilityHidden(true)
+        .accessibilityElement()
+        .accessibilityLabel(spoken ? Self.label(status) : "")
+        .accessibilityHidden(!spoken)
+    }
+
+    static func label(_ status: String?) -> String {
+        switch status {
+        case nil: "대기"
+        case "running": "도는 중"
+        case "done": "답"
+        case "failed": "실패"
+        case "stopped": "멈춤"
+        case "skipped": "건너뜀"
+        default: "부탁"
+        }
     }
 }
 

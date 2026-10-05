@@ -69,15 +69,16 @@
 
 :root {
   /* 라이트 — 生成り(키나리, 표백 안 한 무명) 바탕 · 먹 글자 · 朱(주홍, 인주) 하나(개발 13, Ouro DESIGN «정체성»).
-     회색은 전부 노란 기운을 아주 조금 머금는다 — 푸른 회색(토스)이면 주홍이 떠 보인다. */
+     회색은 전부 노란 기운을 아주 조금 머금는다 — 푸른 회색(토스)이면 주홍이 떠 보인다.
+     글자로 쓰는 ink-muted·accent 는 canvas·surface 모두 4.5:1 이상(WCAG AA, 코덱스 개발 13 1차). */
   --canvas: #f7f4ec;
   --surface: #fcfaf5;
   --surface-sunken: #efebe1;
   --hairline: #e3ded2;
   --ink: #22201c;
   --ink-secondary: #57524a;
-  --ink-muted: #8c867b;
-  --accent: #c9472b;
+  --ink-muted: #726c61;
+  --accent: #bf4329;
 
   font-family: var(--font-sans);
   font-synthesis: none;
@@ -98,7 +99,7 @@
     --hairline: #38352f;
     --ink: #ece7dc;
     --ink-secondary: #a39d92;
-    --ink-muted: #757066;
+    --ink-muted: #908a7e;
     --accent: #e98466; /* 朱 on dark */
   }
 }

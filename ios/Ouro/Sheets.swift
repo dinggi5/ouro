@@ -392,7 +392,7 @@ struct CardFrame<Body: View, Actions: View>: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 HStack(spacing: 6) {
-                    ErrandMark(status: nil)
+                    ErrandMark(status: nil, spoken: false)
                     Text(label).font(.caption13).foregroundStyle(Color.ai)
                 }
                 Spacer()
