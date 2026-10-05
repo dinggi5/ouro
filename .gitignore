@@ -37,3 +37,9 @@ src-tauri/gen/schemas/
 
 # 배포 자격증명(scripts/release.sh 가 읽는다, 개발 8)
 scripts/release.env
+
+# 동기화 헬퍼 — xcodegen 이 project.yml 에서 만든다(scripts/build-sync-helper.sh)
+sync/OuroSync.xcodeproj/
+sync/build/
+sync/.build/
+sync/.swiftpm/

@@ -12,6 +12,7 @@ import { DayList } from "./components/DayList";
 import { MonthGrid, monthGridRange } from "./components/MonthGrid";
 import { blankDraft, EventSheet, fromEvent, toInput, type Draft } from "./components/EventSheet";
 import { UpdateCard, UpdateLine } from "./components/UpdateCard";
+import { SyncCard, SyncLine } from "./components/SyncCard";
 import { ErrandProposalCard } from "./components/ErrandProposalCard";
 import { ProposalCard } from "./components/ProposalCard";
 import { QuickBar } from "./components/QuickBar";
@@ -30,6 +31,7 @@ import {
 import { api, errorText, type EventInput, type OuroEvent } from "./lib/events";
 import { canDirect, quickApi, quickToDraft, type QuickDraft } from "./lib/quick";
 import { useUpdate } from "./lib/update";
+import { useSync } from "./lib/sync";
 import {
   addDays,
   addMonths,
@@ -143,6 +145,7 @@ function App() {
   const [brief, setBrief] = useState<Briefing | null>(null);
   const quickRef = useRef<HTMLInputElement>(null);
   const update = useUpdate();
+  const sync = useSync();
   const [addMenu, setAddMenu] = useState(false);
 
   // 자정이 지나면 «오늘» 에 머물던 커서도 따라 넘어간다. 다른 날을 보고 있었다면 그대로 둔다.
@@ -694,6 +697,8 @@ function App() {
       )}
 
       <UpdateCard u={update} hidden={!!top} />
+      {/* 카드는 한 장만 — 제안·업데이트 카드가 떠 있으면 동기화 카드는 물러난다(640 창에서 버튼이 밀리지 않게). */}
+      <SyncCard sync={sync} hidden={!!top || (update.open && !!update.info)} now={now.getTime()} />
 
       <section className="min-h-0 flex-1 overflow-y-auto px-5 pt-4 pb-5">
         {fatal ? (
@@ -749,6 +754,7 @@ function App() {
       )}
 
       <UpdateLine u={update} cardHidden={!!top} />
+      <SyncLine sync={sync} />
 
       {backupError && (
         <p role="alert" className="shrink-0 truncate px-5 pt-2 text-micro text-danger" title={backupError}>

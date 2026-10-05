@@ -1,0 +1,37 @@
+name: OuroSync
+options:
+  bundleIdPrefix: com.dinggi5
+  deploymentTarget:
+    macOS: "26.0"
+packages:
+  OuroSyncKit:
+    path: .
+targets:
+  OuroSync:
+    type: application
+    platform: macOS
+    sources: [Helper]
+    dependencies:
+      - package: OuroSyncKit
+        product: OuroSyncKit
+    entitlements:
+      path: Helper/OuroSync.entitlements
+      properties:
+        com.apple.developer.icloud-services: [CloudKit]
+        com.apple.developer.icloud-container-identifiers: [iCloud.com.dinggi5.ouro]
+        com.apple.developer.aps-environment: development
+    info:
+      path: Helper/Info.plist
+      properties:
+        CFBundleDisplayName: Ouro Sync
+        LSUIElement: true
+        CFBundleShortVersionString: "0.1.2"
+        CFBundleVersion: "1"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.dinggi5.ouro.sync
+        PRODUCT_NAME: OuroSync
+        DEVELOPMENT_TEAM: 74ZAMXKVXN
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_HARDENED_RUNTIME: YES
+        SWIFT_VERSION: "6.0"

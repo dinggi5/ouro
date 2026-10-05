@@ -656,6 +656,10 @@ impl Store {
             .map_err(|e| e.to_string())?;
         let late_ms = match claim {
             Claim::Scheduled => {
+                // 동기화 중이면 예약 부탁은 «실행 맥» 한 대만 돌린다(개발 10 — 맥 둘이 같은 부탁을 두 번 보내지 않게).
+                if !crate::sync::is_runner(&tx).map_err(|e| e.to_string())? {
+                    return Ok(None);
+                }
                 if any || due.start_at > now {
                     return Ok(None);
                 }
@@ -735,7 +739,9 @@ impl Store {
                         wall_time: shifted_wall(due.start_at, at, wall.as_deref()),
                     };
                     insert_errand(&tx, &n, now).map_err(|e| e.to_string())?;
-                    tx.execute("UPDATE items SET rrule = NULL WHERE id = ?1", [id]).map_err(|e| e.to_string())?;
+                    // updated_at 도 올린다 — 동기화가 «늦게 고친 쪽» 으로 합치므로, 안 올리면 다른 기기의 옛 판(규칙이 붙은)이 이긴다.
+                    tx.execute("UPDATE items SET rrule = NULL, updated_at = ?2 WHERE id = ?1", params![id, now])
+                        .map_err(|e| e.to_string())?;
                 }
                 None => eprintln!("ouro: 반복의 다음 회차를 못 찾았어요 — {rule}"),
             }
@@ -798,11 +804,12 @@ impl Store {
     }
 
     /// 앱이 꺼진 채 «도는 중» 으로 남은 기록 — 프로세스는 이미 없다. 실패로 닫는다.
+    /// **이 맥이 돌린 것만**(개발 10) — 동기화로 받은 다른 맥의 «도는 중» 은 그 맥이 끝내고 결과가 다시 온다.
     pub(crate) fn fail_orphan_runs(&self) -> Result<usize, String> {
         self.conn()
             .execute(
                 "UPDATE runs SET status = 'failed', finished_at = ?1, stderr = ?2
-                 WHERE status = 'running'",
+                 WHERE status = 'running' AND (device IS NULL OR device = (SELECT value FROM settings WHERE key = 'device_id'))",
                 params![now_ms(), ORPHAN_REASON],
             )
             .map_err(|e| e.to_string())
@@ -847,10 +854,15 @@ impl Store {
             .map_err(|e| e.to_string())
     }
 
-    /// 지금 도는 부탁이 하나라도 있나 — 업데이트 설치(앱 재시작) 전에 본다(update.rs).
+    /// 이 맥에서 지금 도는 부탁이 하나라도 있나 — 업데이트 설치(앱 재시작) 전에 본다(update.rs). 다른 맥의 실행은 상관없다.
     pub(crate) fn any_running(&self) -> Result<bool, String> {
         self.conn()
-            .query_row("SELECT EXISTS (SELECT 1 FROM runs WHERE status = 'running')", [], |r| r.get(0))
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM runs WHERE status = 'running'
+                   AND (device IS NULL OR device = (SELECT value FROM settings WHERE key = 'device_id')))",
+                [],
+                |r| r.get(0),
+            )
             .map_err(|e| e.to_string())
     }
 

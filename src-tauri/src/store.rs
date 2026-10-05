@@ -315,7 +315,12 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     // 8 — 개발 9: 반복 부탁이 지키려는 로컬 벽시계 시각(`HH:MM:SS`). 서머타임으로 그 시각이 없는 날엔 회차가 한 시간 뒤로 밀리는데,
     //     다음 회차는 앞 회차의 시각을 베끼므로 그 밀린 시각이 영영 굳었다(코덱스 개발 8 P2). 밀린 회차에만 원래 시각을 적는다(NULL = 제 시각 그대로).
     "ALTER TABLE errands ADD COLUMN wall_time TEXT",
+    // 9 — 개발 10: iCloud 동기화(sync.rs). 표마다 «무엇이 바뀌었나» 를 트리거가 `sync_outbox` 에 적는다 — 쓰는 곳(팝오버·MCP·디스패처)을
+    //     하나도 안 고치고 빠짐없이 잡으려고(uid 와 같은 이유). 동기화가 꺼져 있거나(`on`) 받은 것을 적는 중이면(`applying`) 안 적는다.
+    //     `runs.device` = 그 실행을 돌린 기기 — 켤 때 «끊김» 으로 닫는 건 내 기기가 돌리던 것만(다른 맥이 도는 중인 걸 닫지 않게).
+    SYNC_MIGRATION,
 ];
+
 
 /// SQL 로 만드는 UUID v4: 8-4-4-4-12, 세 번째 묶음 첫 글자 `4`, 네 번째 묶음 첫 글자 8·9·a·b.
 /// `random() & 3` — `abs(random())` 은 i64 최솟값에서 넘침 오류가 난다.
@@ -339,6 +344,46 @@ macro_rules! uid_for {
         )
     };
 }
+/// 동기화 트리거의 WHEN — 켜져 있고, 받은 것을 적는 중이 아닐 때만.
+macro_rules! sync_when {
+    () => {
+        "(SELECT v FROM sync_flags WHERE k = 'on') = 1 AND (SELECT v FROM sync_flags WHERE k = 'applying') = 0"
+    };
+}
+/// `src` 표의 INSERT/UPDATE 가 `dst` 표의 줄(`rid`)을 «보낼 것» 으로 적는 트리거.
+macro_rules! sync_save {
+    ($name:expr, $when:literal, $src:literal, $dst:literal, $rid:expr) => {
+        concat!(
+            "CREATE TRIGGER sync_", $name, " AFTER ", $when, " ON ", $src, " WHEN ", sync_when!(), " BEGIN\n",
+            "  UPDATE sync_flags SET v = v + 1 WHERE k = 'seq';\n",
+            "  INSERT INTO sync_outbox (key, tbl, rid, uid, op, seq) VALUES ('", $dst, ":' || ", $rid, ", '", $dst, "', ", $rid,
+            ", NULL, 'save', (SELECT v FROM sync_flags WHERE k = 'seq'))\n",
+            "    ON CONFLICT (key) DO UPDATE SET seq = excluded.seq;\n",
+            "END;\n",
+        )
+    };
+}
+/// 한 표의 저장(INSERT·UPDATE)과 삭제를 적는 트리거 셋.
+macro_rules! sync_track {
+    ($t:literal, $id:literal) => {
+        concat!(
+            sync_save!($t, "INSERT", $t, $t, concat!("NEW.", $id)),
+            "CREATE TRIGGER sync_", $t, "_upd AFTER UPDATE ON ", $t, " WHEN ", sync_when!(), " BEGIN\n",
+            "  UPDATE sync_flags SET v = v + 1 WHERE k = 'seq';\n",
+            "  INSERT INTO sync_outbox (key, tbl, rid, uid, op, seq) VALUES ('", $t, ":' || NEW.", $id, ", '", $t, "', NEW.", $id,
+            ", NULL, 'save', (SELECT v FROM sync_flags WHERE k = 'seq'))\n",
+            "    ON CONFLICT (key) DO UPDATE SET seq = excluded.seq;\n",
+            "END;\n",
+            "CREATE TRIGGER sync_", $t, "_del AFTER DELETE ON ", $t, " WHEN ", sync_when!(), " AND OLD.uid IS NOT NULL BEGIN\n",
+            "  UPDATE sync_flags SET v = v + 1 WHERE k = 'seq';\n",
+            "  DELETE FROM sync_outbox WHERE key = '", $t, ":' || OLD.", $id, ";\n",
+            "  INSERT INTO sync_outbox (key, tbl, rid, uid, op, seq) VALUES ('del:' || OLD.uid, '", $t, "', NULL, OLD.uid, 'delete', ",
+            "(SELECT v FROM sync_flags WHERE k = 'seq'))\n",
+            "    ON CONFLICT (key) DO UPDATE SET seq = excluded.seq;\n",
+            "END;\n",
+        )
+    };
+}
 /// 7번 마이그레이션 SQL. 표 넷에 같은 모양을 매크로로 붙인다(손으로 네 번 베끼면 어긋날 수 있어서).
 const UID_MIGRATION: &str = concat!(
     uid_for!("items"),
@@ -346,6 +391,31 @@ const UID_MIGRATION: &str = concat!(
     uid_for!("proposals"),
     uid_for!("errand_proposals"),
 );
+/// 9번 마이그레이션 — 동기화 장부. 줄 이름(key): 저장은 `<표>:<rowid>`(보낼 때 uid 를 읽는다 — uid 채우는 트리거와
+/// 순서가 정해져 있지 않아 INSERT 순간엔 uid 가 비어 있을 수 있다), 삭제는 `del:<uid>`(줄이 없으니 uid 를 적어 둔다;
+/// rowid 는 재사용되므로 삭제를 rowid 로 적으면 새 줄의 저장이 덮어쓴다).
+const SYNC_MIGRATION: &str = concat!(
+    "ALTER TABLE runs ADD COLUMN device TEXT;\n",
+    "CREATE TABLE sync_flags (k TEXT PRIMARY KEY, v INTEGER NOT NULL);\n",
+    "INSERT INTO sync_flags (k, v) VALUES ('on', 0), ('applying', 0), ('seq', 0);\n",
+    "INSERT OR IGNORE INTO settings (key, value) VALUES ('device_id', ", uuid_sql!(), ");\n",
+    "CREATE TABLE sync_outbox (key TEXT PRIMARY KEY, tbl TEXT NOT NULL, rid INTEGER, uid TEXT,\n",
+    "  op TEXT NOT NULL CHECK (op IN ('save', 'delete')), seq INTEGER NOT NULL);\n",
+    "CREATE INDEX sync_outbox_seq ON sync_outbox (seq);\n",
+    "CREATE TABLE sync_meta (name TEXT PRIMARY KEY, system TEXT NOT NULL);\n",
+    "CREATE TABLE sync_inbox (name TEXT PRIMARY KEY, type TEXT NOT NULL, payload TEXT NOT NULL, why TEXT NOT NULL, at INTEGER NOT NULL);\n",
+    "CREATE TRIGGER runs_device AFTER INSERT ON runs WHEN NEW.device IS NULL BEGIN\n",
+    "  UPDATE runs SET device = (SELECT value FROM settings WHERE key = 'device_id') WHERE rowid = NEW.rowid;\n",
+    "END;\n",
+    sync_track!("items", "id"),
+    sync_track!("runs", "id"),
+    sync_track!("proposals", "id"),
+    sync_track!("errand_proposals", "id"),
+    // 부탁 칸은 `items` 레코드에 같이 실린다 — errands 가 바뀌면 그 item 을 보낸다. errands 만 지워지는 길은 없다(item 과 CASCADE).
+    sync_save!("errands_ins", "INSERT", "errands", "items", "NEW.item_id"),
+    sync_save!("errands_upd", "UPDATE", "errands", "items", "NEW.item_id"),
+);
+
 /// uid 를 단 표들 — 테스트가 하나씩 확인한다.
 #[cfg(test)]
 const UID_TABLES: &[&str] = &["items", "runs", "proposals", "errand_proposals"];

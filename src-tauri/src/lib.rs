@@ -10,6 +10,7 @@
 //   dispatch 때가 된 부탁을 `claude -p` 로 보내고 답을 적는 일꾼 (개발 5)
 //   mcp     MCP 사이드카가 묻는 소켓 — 읽기·제안만, 승인은 팝오버에서 (개발 4)
 //   update  인앱 업데이트 — 확인은 저절로, 설치는 사람이 노트를 보고 누를 때만 (개발 8)
+//   sync    iCloud 동기화의 앱 쪽 — 바뀐 줄 장부·레코드 변환·합치기·헬퍼(OuroSync.app) 관리·실행 맥 (개발 10)
 //
 // 이 파일에는 앱 셸만 둔다: 커맨드(프론트가 부르는 문) + run(). 판단은 전부 모듈에 있다.
 
@@ -21,6 +22,7 @@ mod mcp;
 mod notify;
 mod parse;
 mod store;
+mod sync;
 mod tray;
 mod update;
 
@@ -39,6 +41,7 @@ pub(crate) struct Core {
     presence: Arc<mcp::Presence>,
     alerts: alerts::Alerts,
     pub(crate) dispatcher: dispatch::Dispatcher,
+    sync: sync::Syncer,
     dir: std::path::PathBuf,
     /// 한 데이터 폴더에 앱 하나만 — 프로세스가 사는 동안 쥔다.
     _instance: std::fs::File,
@@ -80,7 +83,49 @@ fn open_core(app: &tauri::AppHandle) -> CoreState {
             let _ = handle.emit("errands-changed", ());
         }),
     );
-    Ok(Core { store, alerts, dispatcher, dir, presence: Arc::default(), _instance })
+    let handle = app.clone();
+    let sync = sync::Syncer::start(
+        store.clone(),
+        &dir,
+        sync::find_helper(),
+        sync::computer_name(),
+        Arc::new(move |c| {
+            if c == sync::Change::Data {
+                // 다른 기기에서 온 일정·부탁·제안 — 목록을 다시 읽고, 새로 온 부탁이 있을 수 있으니 디스패처를 깨운다.
+                let _ = handle.emit("errands-changed", ());
+                let _ = handle.emit("proposals-changed", ());
+                if let Some(Ok(core)) = handle.try_state::<CoreState>().map(|s| s.inner().as_ref()) {
+                    core.dispatcher.poke();
+                }
+            }
+            let _ = handle.emit("sync-changed", ());
+        }),
+    );
+    Ok(Core { store, alerts, dispatcher, sync, dir, presence: Arc::default(), _instance })
+}
+
+/// iCloud 동기화 상태(팝오버 아래 한 줄·설정 카드).
+#[tauri::command]
+fn sync_status(state: State<'_, CoreState>) -> Result<sync::SyncStatus, String> {
+    Ok(core(&state)?.sync.status())
+}
+
+#[tauri::command]
+fn set_sync(state: State<'_, CoreState>, on: bool) -> Result<sync::SyncStatus, String> {
+    core(&state)?.sync.set_enabled(on)
+}
+
+/// 이 맥을 «실행 맥» 으로 — 예약 부탁을 이 맥이 돌린다.
+#[tauri::command]
+fn make_runner(state: State<'_, CoreState>) -> Result<sync::SyncStatus, String> {
+    core(&state)?.sync.make_runner()
+}
+
+/// 팝오버를 열 때 — 다른 기기에서 바뀐 걸 바로 받는다(푸시를 못 받았을 때의 보험).
+#[tauri::command]
+fn sync_fetch(state: State<'_, CoreState>) -> Result<(), String> {
+    core(&state)?.sync.fetch_now();
+    Ok(())
 }
 
 /// 부탁 — 예약 시각이 창 [from, to) 인 것과 각자의 최근 실행(상태·답).
@@ -376,6 +421,10 @@ pub fn run() {
             approve_errand_proposal,
             reject_errand_proposal,
             mcp_clients,
+            sync_status,
+            set_sync,
+            make_runner,
+            sync_fetch,
             update::check_update,
             update::install_update
         ])
@@ -391,6 +440,7 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 if let Ok(c) = app.state::<CoreState>().inner().as_ref() {
                     c.dispatcher.shutdown();
+                    c.sync.shutdown();
                 }
             }
         });
