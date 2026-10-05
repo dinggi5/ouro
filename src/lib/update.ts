@@ -71,6 +71,12 @@ export function useUpdate(): UpdateState {
     let alive = true;
     const keep = (u: () => void) => (alive ? unlisten.push(u) : u());
     listen("update-check", () => void check(true)).then(keep, () => {});
+    // 다른 창에서 설치를 시작·실패했다(개발 12) — 이 창도 같이 «설치 중» 이 돼 새 초안을 막는다.
+    listen<boolean>("update-installing", (e) => {
+      installingRef.current = e.payload;
+      setInstalling(e.payload);
+      if (e.payload) setProgress(null);
+    }).then(keep, () => {});
     listen<Progress>("update-progress", (e) => {
       const { downloaded, total } = e.payload;
       setProgress(total ? Math.min(1, downloaded / total) : null);
@@ -91,12 +97,13 @@ export function useUpdate(): UpdateState {
     setMessage(null);
     setProgress(null);
     // 성공하면 앱이 다시 켜져 여기로 돌아오지 않는다. 돌아왔다면 실패(부탁이 도는 중 등) — 문장을 보인다.
-    invoke("install_update").catch((e) => {
+    // 본 버전을 같이 보낸다 — 다른 창의 확인이 후보를 바꿨으면 러스트가 거절한다.
+    invoke("install_update", { version: info?.version ?? "" }).catch((e) => {
       installingRef.current = false;
       setInstalling(false);
       setMessage(errorText(e));
     });
-  }, []);
+  }, [info]);
 
   return {
     info,

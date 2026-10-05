@@ -50,6 +50,8 @@ export type Errand = {
   /** 앞 대화를 잇는 부탁이다 — 부모가 지워져도 참. */
   resumes: boolean;
   run: Run | null;
+  /** 판 번호(items.updated_at) — 고치기·«지금 실행» 이 본 판과 같은지 러스트가 맞춰 본다. */
+  updatedAt: number;
 };
 
 export type ErrandInput = Pick<Errand, "prompt" | "startAt" | "allowedTools" | "late" | "target" | "repeat" | "carry" | "resumeRunId">;
@@ -83,10 +85,10 @@ export const LATE_OPTIONS: { value: "run" | "skip"; label: string }[] = [
 export const errandApi = {
   list: (from: Date, to: Date) => invoke<Errand[]>("list_errands", { from: from.getTime(), to: to.getTime() }),
   create: (input: ErrandInput) => invoke<Errand>("create_errand", { input }),
-  update: (id: number, input: ErrandInput) => invoke<Errand>("update_errand", { id, input }),
+  update: (id: number, input: ErrandInput, seen?: number) => invoke<Errand>("update_errand", { id, input, seen: seen ?? null }),
   remove: (id: number) => invoke<void>("delete_errand", { id }),
   restore: (id: number) => invoke<Errand>("restore_errand", { id }),
-  runNow: (id: number) => invoke<void>("run_errand_now", { id }),
+  runNow: (id: number, seen?: number) => invoke<void>("run_errand_now", { id, seen: seen ?? null }),
   stop: (runId: number) => invoke<void>("stop_run", { runId }),
   markRead: (runId: number) => invoke<void>("mark_run_read", { runId }),
   /** 이 부탁의 실행 기록, 최근 것부터(맨 앞 = `Errand.run`). */

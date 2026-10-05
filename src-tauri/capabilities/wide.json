@@ -1,13 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "wide",
-  "description": "크게 보기 창(개발 12). 팝오버와 같은 이벤트 듣기 둘 + 제목 막대를 화면에 녹였으니(Overlay) 창 끌기(start-dragging) 하나. 닫기·열기는 앱 커맨드(close_window·open_wide)라 창 API 를 더 열지 않는다.",
+  "description": "크게 보기 창(개발 12). 팝오버와 같은 이벤트 듣기 둘 + 제목 막대를 화면에 녹였으니(Overlay) 창 끌기(start-dragging)와 제목 막대 더블클릭 확대(internal-toggle-maximize, Tauri drag.js 가 부른다 — 코덱스 개발 12) 둘. 닫기·열기는 앱 커맨드(close_window·open_wide)라 창 API 를 더 열지 않는다.",
   "windows": [
     "wide"
   ],
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
-    "core:window:allow-start-dragging"
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize"
   ]
 }

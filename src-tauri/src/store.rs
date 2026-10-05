@@ -731,20 +731,32 @@ impl Store {
         Ok(())
     }
 
+    /// 판 확인 없이 고친다 — 테스트용(앱의 문은 늘 본 판을 싣는다).
+    #[cfg(test)]
     pub(crate) fn update_event(&self, id: i64, input: &EventInput) -> Result<Event, String> {
+        self.update_event_if(id, input, None)
+    }
+
+    /// `seen` = 사람이 고치기 시작할 때 본 판(`updated_at`). 그 사이 다른 창·MCP·다른 기기가 고쳤으면 덮지 않고 거절한다
+    /// — 옛 시트가 새 판의 시각·메모·«AI 에게 숨기기» 까지 되돌리지 않게(코덱스 개발 12). None = 확인 안 함.
+    pub(crate) fn update_event_if(&self, id: i64, input: &EventInput, seen: Option<i64>) -> Result<Event, String> {
         let v = validate(input)?;
         let (sa, ea, sd, ed) = split_when(&v.when);
         let n = self
             .conn()
             .execute(
                 "UPDATE items SET title = ?2, notes = ?3, all_day = ?4, start_at = ?5, end_at = ?6,
-                                  start_date = ?7, end_date = ?8, alert_min = ?9, private = ?10, updated_at = ?11
-                 WHERE id = ?1 AND kind = 'event' AND deleted_at IS NULL",
-                params![id, v.title, v.notes, input.all_day, sa, ea, sd, ed, v.alert_min, v.private, now_ms()],
+                                  start_date = ?7, end_date = ?8, alert_min = ?9, private = ?10,
+                                  updated_at = MAX(?11, updated_at + 1)
+                 WHERE id = ?1 AND kind = 'event' AND deleted_at IS NULL AND (?12 IS NULL OR updated_at = ?12)",
+                params![id, v.title, v.notes, input.all_day, sa, ea, sd, ed, v.alert_min, v.private, now_ms(), seen],
             )
             .map_err(|e| e.to_string())?;
         if n == 0 {
-            return Err("이미 지워진 일정이에요".into());
+            return Err(match self.get_event(id)? {
+                Some(_) => "다른 곳에서 먼저 고친 일정이에요 — 닫고 다시 열어 주세요".into(),
+                None => "이미 지워진 일정이에요".into(),
+            });
         }
         self.get_event(id)?.ok_or_else(|| "고친 일정을 못 찾았어요".into())
     }
@@ -1010,6 +1022,21 @@ mod tests {
     fn validate_trims_title_and_allows_zero_length() {
         let v = validate(&timed("  치과  ", 5, 5)).unwrap();
         assert_eq!(v.title, "치과");
+    }
+
+    #[test]
+    fn stale_edit_is_refused() {
+        // 크게 보기와 팝오버가 같은 일정을 열었다 — 먼저 저장한 쪽이 이기고, 옛 판을 본 쪽은 덮지 못한다(개발 12).
+        let s = Store::open_in_memory();
+        let e = s.create_event(&timed("회의", 1_000, 2_000)).unwrap();
+        let first = s.update_event_if(e.id, &timed("회의 (옮김)", 3_000, 4_000), Some(e.updated_at)).unwrap();
+        assert!(first.updated_at > e.updated_at, "같은 ms 에 고쳐도 판은 올라간다");
+        let err = s.update_event_if(e.id, &timed("옛 시트", 1_000, 2_000), Some(e.updated_at)).unwrap_err();
+        assert!(err.contains("먼저 고친"), "{err}");
+        assert_eq!(s.get_event(e.id).unwrap().unwrap().title, "회의 (옮김)");
+        s.delete_event(e.id).unwrap();
+        let err = s.update_event_if(e.id, &timed("x", 0, 1), Some(first.updated_at)).unwrap_err();
+        assert!(err.contains("지워진"), "{err}");
     }
 
     #[test]

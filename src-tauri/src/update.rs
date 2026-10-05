@@ -23,6 +23,8 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 
 /// 진행률 이벤트. payload = `UpdateProgress`.
 const PROGRESS_EVENT: &str = "update-progress";
+/// 설치 시작(true)·실패로 끝남(false) — 모든 창에 알린다(크게 보기, 개발 12).
+const INSTALLING_EVENT: &str = "update-installing";
 /// 확인·내려받기 요청 하나의 시간 제한. 연결만 붙잡고 답을 안 주는 프록시에서 «확인하는 중» 에 갇히지 않게(코덱스 개발 8 1차).
 /// 플러그인 기본값은 제한 없음이다. 10MB 남짓이라 느린 회선에서도 넉넉한 값.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
@@ -93,6 +95,7 @@ pub(crate) async fn install_update(
     app: AppHandle,
     state: State<'_, PendingUpdate>,
     core: State<'_, crate::CoreState>,
+    version: String,
 ) -> Result<(), String> {
     // 플래그는 슬롯 잠금 안에서 세운다 — `check_update` 도 같은 잠금 안에서 플래그를 보고 후보를 쓰므로 둘이 줄을 선다(코덱스 개발 9 2차).
     {
@@ -101,13 +104,16 @@ pub(crate) async fn install_update(
             return Err("이미 설치하는 중이에요".into());
         }
     }
-    let r = install(&app, &state, core.inner().as_ref().ok()).await;
+    // 창이 둘이다(개발 12) — 다른 창도 «설치 중» 이 돼야 곧 사라질 초안을 새로 쓰지 않는다.
+    let _ = app.emit(INSTALLING_EVENT, true);
+    let r = install(&app, &state, core.inner().as_ref().ok(), &version).await;
     // 여기로 돌아왔다면 실패다(성공하면 restart 가 돌아오지 않는다).
     state.1.store(false, Ordering::SeqCst);
+    let _ = app.emit(INSTALLING_EVENT, false);
     r
 }
 
-async fn install(app: &AppHandle, state: &State<'_, PendingUpdate>, core: Option<&crate::Core>) -> Result<(), String> {
+async fn install(app: &AppHandle, state: &State<'_, PendingUpdate>, core: Option<&crate::Core>, seen: &str) -> Result<(), String> {
     // DB 를 못 연 앱은 부탁을 돌릴 수도 없다 — 업데이트가 그 문제를 고칠 수도 있으니 막지 않는다.
     let busy = || core.map_or(Ok(false), |c| c.store.any_running());
     if busy()? {
@@ -119,6 +125,10 @@ async fn install(app: &AppHandle, state: &State<'_, PendingUpdate>, core: Option
         .map_err(|_| "업데이트 상태가 깨졌어요".to_string())?
         .take()
         .ok_or_else(|| "설치할 업데이트가 없어요. 다시 확인해 주세요.".to_string())?;
+    // 후보 슬롯은 하나인데 확인은 창마다 돈다 — 이 창이 노트를 보여 준 버전이 아니면 깔지 않는다(코덱스 개발 12).
+    if update.version != seen {
+        return Err(restore_slot(state, update, "그 사이 다른 버전을 찾았어요. 다시 확인해 주세요.".into()));
+    }
 
     // 받기와 깔기를 나눈다 — 받는 동안(수십 초)은 부탁을 막지 않는다. 깔기 직전에만 붙잡는다.
     let progress_app = app.clone();

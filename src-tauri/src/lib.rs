@@ -154,9 +154,15 @@ fn create_errand(app: tauri::AppHandle, state: State<'_, CoreState>, input: Erra
 }
 
 #[tauri::command]
-fn update_errand(app: tauri::AppHandle, state: State<'_, CoreState>, id: i64, input: ErrandInput) -> Result<Errand, String> {
+fn update_errand(
+    app: tauri::AppHandle,
+    state: State<'_, CoreState>,
+    id: i64,
+    input: ErrandInput,
+    seen: Option<i64>,
+) -> Result<Errand, String> {
     let c = core(&state)?;
-    let e = c.store.update_errand(id, &input)?;
+    let e = c.store.update_errand_if(id, &input, seen)?;
     c.dispatcher.poke();
     touched(&app);
     Ok(e)
@@ -181,9 +187,15 @@ fn restore_errand(app: tauri::AppHandle, state: State<'_, CoreState>, id: i64) -
 }
 
 /// 지금 한 번 돌린다(예약과 무관 · 다시 실행).
+/// `seen` = 사람이 화면에서 본 판 — 그 사이 다른 창에서 글·받는 쪽·도구를 바꿨으면 본 것과 다른 글이 나가므로 거절한다(코덱스 개발 12).
 #[tauri::command]
-fn run_errand_now(state: State<'_, CoreState>, id: i64) -> Result<(), String> {
+fn run_errand_now(state: State<'_, CoreState>, id: i64, seen: Option<i64>) -> Result<(), String> {
     let c = core(&state)?;
+    if let Some(s) = seen {
+        if c.store.get_errand(id)?.is_some_and(|e| e.updated_at != s) {
+            return Err("다른 곳에서 고친 부탁이에요 — 닫고 다시 열어 주세요".into());
+        }
+    }
     if c.store.is_running(id)? {
         return Err("이미 도는 중이에요".into());
     }
@@ -252,9 +264,15 @@ fn create_event(app: tauri::AppHandle, state: State<'_, CoreState>, input: Event
 }
 
 #[tauri::command]
-fn update_event(app: tauri::AppHandle, state: State<'_, CoreState>, id: i64, input: EventInput) -> Result<Event, String> {
+fn update_event(
+    app: tauri::AppHandle,
+    state: State<'_, CoreState>,
+    id: i64,
+    input: EventInput,
+    seen: Option<i64>,
+) -> Result<Event, String> {
     let c = core(&state)?;
-    let e = c.store.update_event(id, &input)?;
+    let e = c.store.update_event_if(id, &input, seen)?;
     c.alerts.poke();
     touched(&app);
     Ok(e)

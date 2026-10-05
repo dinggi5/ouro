@@ -125,6 +125,8 @@ type Sheet = {
 /** proposalId = AI 부탁 제안을 고쳐서 승인하는 시트 — 저장이 `approve_errand_proposal` 로 간다. */
 type ErrandSheetState = {
   id: number | null;
+  /** 열 때 본 판 — 다른 창에서 고친 뒤 옛 글로 덮거나 «지금 실행» 하지 않게(코덱스 개발 12). */
+  seen?: number;
   draft: ErrandDraft;
   key: number;
   fromQuick?: boolean;
@@ -301,7 +303,7 @@ function App() {
 
   const openErrand = (e: Errand) => {
     if (blockedByUpdate()) return;
-    setErrandSheet({ id: e.id, draft: errandToDraft(e), key: ++sheetKey.current });
+    setErrandSheet({ id: e.id, seen: e.updatedAt, draft: errandToDraft(e), key: ++sheetKey.current });
     // 열어 본 답은 «읽음» — 점이 액센트에서 회색으로.
     if (e.run?.status === "done" && !e.run.read) {
       errandApi.markRead(e.run.id).then(() => void reload(), () => {});
@@ -325,7 +327,7 @@ function App() {
         sheet?.proposalId !== undefined
           ? await proposalApi.approve(sheet.proposalId, input)
           : sheet?.editing
-            ? await api.update(sheet.editing.id, input)
+            ? await api.update(sheet.editing.id, input, sheet.editing.updatedAt)
             : await api.create(input);
       if (sheet?.proposalId !== undefined) loadProposals();
       if (sheet?.fromQuick) setQuickText("");
@@ -340,8 +342,17 @@ function App() {
     }
   };
 
-  const openSheetErrand = errandSheet?.id != null ? (errands.find((x) => x.id === errandSheet.id) ?? null) : null;
-  // 열어 둔 부탁이 지워졌거나 창 밖으로 나갔으면 시트를 닫는다.
+  const foundErrand = errandSheet?.id != null ? (errands.find((x) => x.id === errandSheet.id) ?? null) : null;
+  // 크게 보기는 시트를 연 채 달을 넘길 수 있다 — 고른 부탁이 지금 읽은 창(월 격자) 밖으로 나간 것은 지워진 게 아니니
+  // 마지막으로 본 것을 그대로 보인다(쓰던 초안이 닫히지 않게, 코덱스 개발 12). 창 안인데 없으면 지워진 것이다.
+  const lastErrand = useRef<Errand | null>(null);
+  useEffect(() => {
+    if (foundErrand) lastErrand.current = foundErrand;
+  }, [foundErrand]);
+  const cachedErrand = !foundErrand && lastErrand.current?.id === errandSheet?.id ? lastErrand.current : null;
+  const outOfRange = !!cachedErrand && (cachedErrand.startAt < from.getTime() || cachedErrand.startAt >= to.getTime());
+  const openSheetErrand = foundErrand ?? (WIDE && outOfRange ? cachedErrand : null);
+  // 열어 둔 부탁이 지워졌거나 창 밖으로 나갔으면 시트를 닫는다(크게 보기는 위의 «창 밖» 을 빼고).
   useEffect(() => {
     if (errandSheet?.id != null && !openSheetErrand) setErrandSheet(null);
   }, [errandSheet, openSheetErrand]);
@@ -352,7 +363,7 @@ function App() {
         errandSheet?.proposalId !== undefined
           ? await errandProposalApi.approve(errandSheet.proposalId, input)
           : errandSheet?.id != null
-            ? await errandApi.update(errandSheet.id, input)
+            ? await errandApi.update(errandSheet.id, input, errandSheet.seen)
             : await errandApi.create(input);
       if (errandSheet?.proposalId !== undefined) loadProposals();
       if (errandSheet?.fromQuick) setQuickText("");
@@ -398,6 +409,12 @@ function App() {
       return errorText(e);
     }
   };
+
+  /** 열어 둔 부탁의 «지금 실행»·«다시 실행». 판 확인은 아직 안 돈 부탁에만 — 한 번 돈 부탁은 글을 못 고치니(«이미 돈 부탁») 본 글과
+   *  나갈 글이 같고, 반복 회차가 돌면 판이 올라가 확인이 헛걸린다. */
+  const runOpenErrand = errandAction(() =>
+    errandApi.runNow(errandSheet?.id as number, openSheetErrand?.run ? undefined : errandSheet?.seen),
+  );
 
   /** + 버튼 — 문장 없이 빈 시트로 바로 넣는다(개발 8 뒤 사장 피드백: 빠른 입력만 있으니 «AI 채팅만 되는 앱» 처럼 보였다).
    *  보고 있는 날이 기준이다(오늘이면 다음 정각, 다른 날이면 9시) — 빠른 입력의 «날짜 없는 입력» 과 같은 규칙. */
@@ -699,7 +716,7 @@ function App() {
             proposal={errandSheet.proposalId !== undefined}
             onSave={saveErrand}
             onDelete={() => void removeErrand()}
-            onRunNow={errandAction(() => errandApi.runNow(errandSheet.id as number))}
+            onRunNow={runOpenErrand}
             onStop={errandAction(() => errandApi.stop(openSheetErrand?.run?.id ?? 0))}
             onFollowUp={() => openSheetErrand && followUp(openSheetErrand)}
             onClose={() => setErrandSheet(null)}
@@ -814,7 +831,15 @@ function App() {
         />
       )}
 
-      <UpdateCard u={update} hidden={!!top} />
+      {/* 크게 보기는 오른쪽에 시트가 열린 채로 이 카드에 손이 닿는다 — 설치하면 다시 켜져 쓰던 초안이 사라지니 먼저 닫게 한다. */}
+      <UpdateCard
+        u={
+          WIDE && (sheet || errandSheet)
+            ? { ...update, install: () => showToast("열어 둔 것을 닫은 뒤에 설치해 주세요") }
+            : update
+        }
+        hidden={!!top}
+      />
       {/* 카드는 한 장만 — 제안·업데이트 카드가 떠 있으면 동기화 카드는 물러난다(640 창에서 버튼이 밀리지 않게). */}
       <SyncCard sync={sync} hidden={!!top || (update.open && !!update.info)} now={now.getTime()} />
 
@@ -933,7 +958,7 @@ function App() {
       </div>
 
       {WIDE && (
-        <aside className="relative w-[400px] shrink-0 border-l border-hairline bg-surface" aria-label="고른 항목">
+        <aside className="relative w-[360px] shrink-0 border-l border-hairline bg-surface" aria-label="고른 항목">
           {sheet || errandSheet ? (
             <div className="absolute inset-x-0 top-7 bottom-0">
               {sheet && (
@@ -960,7 +985,7 @@ function App() {
                   proposal={errandSheet.proposalId !== undefined}
                   onSave={saveErrand}
                   onDelete={() => void removeErrand()}
-                  onRunNow={errandAction(() => errandApi.runNow(errandSheet.id as number))}
+                  onRunNow={runOpenErrand}
                   onStop={errandAction(() => errandApi.stop(openSheetErrand?.run?.id ?? 0))}
                   onFollowUp={() => openSheetErrand && followUp(openSheetErrand)}
                   onClose={() => setErrandSheet(null)}

@@ -26,8 +26,9 @@ pub(crate) fn open<R: Runtime>(app: &AppHandle<R>) {
     }
     let built = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("index.html".into()))
         .title("Ouro")
-        .inner_size(1120.0, 720.0)
-        .min_inner_size(880.0, 560.0)
+        // 최소 = 왼쪽 288 + 오른쪽 360 + 가운데 팝오버 폭(420)에 가깝게 — 더 좁으면 가운데 머리 버튼이 제목을 덮는다(코덱스 개발 12).
+        .inner_size(1180.0, 760.0)
+        .min_inner_size(1060.0, 600.0)
         // 제목 막대를 화면에 녹인다 — 신호등만 남기고 세 칸이 창 맨 위까지 올라간다(드래그는 data-tauri-drag-region).
         .title_bar_style(TitleBarStyle::Overlay)
         .hidden_title(true)

@@ -136,6 +136,8 @@ pub(crate) struct Errand {
     pub resumes: bool,
     /// 가장 최근 실행. 없으면 «대기».
     pub run: Option<RunView>,
+    /// 판 번호 — 열어 둔 시트가 본 판과 지금 판이 같은지(고치기·«지금 실행», 코덱스 개발 12).
+    pub updated_at: i64,
 }
 
 /// 돌 차례가 된 부탁. `session`·`folder` 는 `claim_run` 이 정한다(목록에선 비어 있다).
@@ -311,7 +313,8 @@ const LIST_SQL: &str = "
            r.resumed_session, r.session_id,
            COALESCE(i.rrule, ''), e.series_id, e.carry, e.resume_run_id,
            (SELECT pi.title FROM runs pr JOIN items pi ON pi.id = pr.item_id WHERE pr.id = e.resume_run_id),
-           e.resume_session IS NOT NULL, (r.device IS NULL OR r.device = (SELECT value FROM settings WHERE key = 'device_id'))
+           e.resume_session IS NOT NULL, (r.device IS NULL OR r.device = (SELECT value FROM settings WHERE key = 'device_id')),
+           i.updated_at
     FROM items i
     JOIN errands e ON e.item_id = i.id
     LEFT JOIN runs r ON r.id = (SELECT id FROM runs WHERE item_id = i.id ORDER BY started_at DESC, id DESC LIMIT 1)
@@ -353,6 +356,7 @@ fn row_to_errand(r: &rusqlite::Row) -> rusqlite::Result<Errand> {
         resume_title: r.get(23)?,
         resumes: r.get(24)?,
         run,
+        updated_at: r.get(26)?,
     })
 }
 
@@ -483,7 +487,14 @@ impl Store {
 
     /// 아직 한 번도 안 돈 부탁만 고친다 — 돈 기록(보낸 원문)이 «지금 문장» 과 어긋나지 않게.
     /// «이어서» 는 만들 때 정해진 대로 둔다(입력의 `resume_run_id` 는 안 본다) — 잇는 대화가 있으면 받는 쪽을 못 바꾼다.
+    /// 판 확인 없이 고친다 — 테스트용(앱의 문은 늘 본 판을 싣는다).
+    #[cfg(test)]
     pub(crate) fn update_errand(&self, id: i64, input: &ErrandInput) -> Result<Errand, String> {
+        self.update_errand_if(id, input, None)
+    }
+
+    /// `seen` = 시트를 열 때 본 판(`updated_at`) — 그 사이 다른 창이 고쳤으면 덮지 않는다(`update_event_if` 와 같은 규칙).
+    pub(crate) fn update_errand_if(&self, id: i64, input: &ErrandInput, seen: Option<i64>) -> Result<Errand, String> {
         {
             let mut conn = self.conn();
             let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -494,16 +505,21 @@ impl Store {
                 return Err("이미 돈 부탁은 고칠 수 없어요 — 새로 만들어 주세요".into());
             }
             // 잇는 대화(만들 때 베낀 번호)가 있으면 받는 쪽·반복을 못 바꾼다 — 부모 실행이 지워져 `resume_run_id` 가 NULL 이어도.
-            let cur: Option<(Option<i64>, Option<String>, String, i64)> = tx
+            // (잇는 실행, 잇는 세션, 받는 쪽, 예약 시각, 판)
+            type Cur = (Option<i64>, Option<String>, String, i64, i64);
+            let cur: Option<Cur> = tx
                 .query_row(
-                    "SELECT e.resume_run_id, e.resume_session, e.target, i.start_at FROM errands e JOIN items i ON i.id = e.item_id
+                    "SELECT e.resume_run_id, e.resume_session, e.target, i.start_at, i.updated_at FROM errands e JOIN items i ON i.id = e.item_id
                      WHERE e.item_id = ?1",
                     [id],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
                 )
                 .optional()
                 .map_err(|e| e.to_string())?;
-            let (resume_run, resume_session, target, old_start) = cur.ok_or("이미 지워진 부탁이에요")?;
+            let (resume_run, resume_session, target, old_start, rev) = cur.ok_or("이미 지워진 부탁이에요")?;
+            if seen.is_some_and(|s| s != rev) {
+                return Err("다른 곳에서 먼저 고친 부탁이에요 — 닫고 다시 열어 주세요".into());
+            }
             let input = ErrandInput { resume_run_id: resume_run, ..input.clone() };
             let (prompt, title) = validate(&input)?;
             if resume_session.is_some() && (input.target != target || !input.repeat.is_empty()) {
@@ -513,7 +529,7 @@ impl Store {
             let start_at = first_at(&input);
             let n = tx
                 .execute(
-                    "UPDATE items SET title = ?2, start_at = ?3, end_at = ?3, rrule = ?4, updated_at = ?5
+                    "UPDATE items SET title = ?2, start_at = ?3, end_at = ?3, rrule = ?4, updated_at = MAX(?5, updated_at + 1)
                      WHERE id = ?1 AND kind = 'errand' AND deleted_at IS NULL",
                     params![id, title, start_at, rrule, now_ms()],
                 )
@@ -1220,6 +1236,18 @@ mod tests {
         s.delete_errand(e.id).unwrap();
         assert!(s.get_errand(e.id).unwrap().is_none());
         assert_eq!(s.restore_errand(e.id).unwrap().id, e.id);
+    }
+
+    #[test]
+    fn stale_errand_edit_is_refused() {
+        // 다른 창에서 먼저 고친 부탁을 옛 시트가 덮지 못한다 — 판은 같은 ms 에 고쳐도 올라간다(개발 12).
+        let s = Store::open_in_memory();
+        let e = s.create_errand(&input("옛 문장", 1_000)).unwrap();
+        let b = s.update_errand_if(e.id, &input("새 문장", 1_000), Some(e.updated_at)).unwrap();
+        assert!(b.updated_at > e.updated_at);
+        let err = s.update_errand_if(e.id, &input("옛 시트", 1_000), Some(e.updated_at)).unwrap_err();
+        assert!(err.contains("먼저 고친"), "{err}");
+        assert_eq!(s.get_errand(e.id).unwrap().unwrap().prompt, "새 문장");
     }
 
     #[test]

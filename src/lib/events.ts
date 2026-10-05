@@ -46,7 +46,8 @@ export const api = {
   list: (from: Date, to: Date) =>
     invoke<OuroEvent[]>("list_events", { from: from.getTime(), to: to.getTime() }),
   create: (input: EventInput) => invoke<OuroEvent>("create_event", { input }),
-  update: (id: number, input: EventInput) => invoke<OuroEvent>("update_event", { id, input }),
+  /** seen = 시트를 열 때 본 판(`updatedAt`) — 그 사이 다른 곳에서 고쳤으면 러스트가 거절한다. */
+  update: (id: number, input: EventInput, seen?: number) => invoke<OuroEvent>("update_event", { id, input, seen: seen ?? null }),
   remove: (id: number) => invoke<void>("delete_event", { id }),
   restore: (id: number) => invoke<OuroEvent>("restore_event", { id }),
   backupError: () => invoke<string | null>("backup_error"),
