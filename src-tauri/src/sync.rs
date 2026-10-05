@@ -618,6 +618,8 @@ fn undo_losing_approval(conn: &Connection, ty: &str, local: &Map<String, Value>,
 
 /// 서버에서 지워진 레코드. 실행 기록이 남은 부탁은 지우지 않는다 — 바깥으로 나간 원문을 지키고(CLAUDE.md 불변 규칙),
 /// 서버엔 다시 올린다(다른 기기가 그 실행을 아직 못 받았을 수 있다).
+/// 아직 못 보낸 이 기기의 고침이 있어도 같다 — 오래 꺼져 있던 기기에서 고친 것이 그 사이 비운 휴지통에 조용히 지워지지 않게
+/// 되살려 올린다(코덱스 개발 14 P0). 잃는 것보다 한 번 더 지우게 하는 게 낫다.
 fn apply_delete(conn: &Connection, ty: &str, name: &str) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM sync_inbox WHERE name = ?1", [name])?;
     conn.execute("DELETE FROM sync_meta WHERE name = ?1", [name])?;
@@ -630,6 +632,10 @@ fn apply_delete(conn: &Connection, ty: &str, name: &str) -> rusqlite::Result<()>
         return Ok(());
     };
     let key = format!("{}:{id}", s.table);
+    let unsent: bool = conn.query_row("SELECT EXISTS (SELECT 1 FROM sync_outbox WHERE key = ?1 AND op = 'save')", [&key], |r| r.get(0))?;
+    if unsent {
+        return enqueue_save(conn, &key, s.table, Some(id));
+    }
     if s.ty == "Item" {
         let has_runs: bool = conn.query_row("SELECT EXISTS (SELECT 1 FROM runs WHERE item_id = ?1)", [id], |r| r.get(0))?;
         if has_runs {
@@ -1461,6 +1467,25 @@ mod tests {
         apply(&a, &[], &[("Item".into(), uid.clone())]).unwrap();
         assert!(a.get_errand(er.id).unwrap().is_some(), "돈 부탁은 남는다");
         assert!(outbox_since(&a.conn(), 0).unwrap().iter().any(|p| p.name == uid && p.save), "서버에 다시 올린다");
+    }
+
+    /// 서버에서 지워졌다는 소식이 와도, 아직 못 보낸 이 기기의 고침은 지우지 않고 다시 올린다(코덱스 개발 14 P0).
+    /// 오래 꺼져 있던 맥에서 고친 일정이, 그 사이 다른 기기가 휴지통을 비운 삭제에 조용히 지워지지 않게.
+    #[test]
+    fn remote_delete_keeps_unsent_local_edit() {
+        let a = Store::open_in_memory();
+        set_on(&a, true).unwrap();
+        let ev = a.create_event(&event("치과", 1_800_000_000_000)).unwrap();
+        drain(&a);
+        let uid = uid_of(&a, "items", ev.id);
+        a.update_event(ev.id, &event("치과 — 새 메모", 1_800_000_000_000)).unwrap();
+        apply(&a, &[], &[("Item".into(), uid.clone())]).unwrap();
+        assert_eq!(a.get_event(ev.id).unwrap().map(|e| e.title), Some("치과 — 새 메모".into()), "못 보낸 고침은 남는다");
+        assert!(outbox_since(&a.conn(), 0).unwrap().iter().any(|p| p.name == uid && p.save), "서버에 다시 올린다");
+        // 보낼 게 없는 것은 그대로 지워진다.
+        drain(&a);
+        apply(&a, &[], &[("Item".into(), uid)]).unwrap();
+        assert!(a.get_event(ev.id).unwrap().is_none());
     }
 
     #[test]

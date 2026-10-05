@@ -71,6 +71,11 @@ public enum QuickParse {
         return QuickWhen(allDay: false, start: s, end: e)
     }
 
+    /// 초안의 날짜 글 → 그날 0시. 시각과 달리 날짜는 서머타임에 없어지지 않는다.
+    public static func day(_ ymd: String, calendar: Calendar = .current) -> Date? {
+        posix("yyyy-MM-dd", calendar).date(from: ymd).map { calendar.startOfDay(for: $0) }
+    }
+
     /// 벽시계 그대로인 때만 — 거꾸로 적어 같은 글이 나오지 않으면 없는 시각이다.
     static func exact(_ ymd: String, _ hm: String, _ cal: Calendar) -> Date? {
         let f = posix("yyyy-MM-dd HH:mm", cal)

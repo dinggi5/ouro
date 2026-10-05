@@ -313,3 +313,20 @@ let fixtures = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appen
     let name = try s.approveErrandProposal("ep1")
     #expect(s.bag(name)?.str("allowed_tools") == "Read,Grep")
 }
+
+/// 서버 삭제가 와도 못 보낸 고침은 남기고 다시 올린다(코덱스 개발 14 P0 — 맥 `remote_delete_keeps_unsent_local_edit`).
+@Test @MainActor func remoteDeleteKeepsUnsentEdit() throws {
+    let (a, b) = twoStores()
+    var d = EventDraft()
+    d.title = "치과"
+    let id = try a.createEvent(d)
+    ship(a, to: b)
+    d.title = "치과 — 새 메모"
+    try b.updateEvent(id, d)
+    let resend = try b.apply([], deleted: [RecordRef(type: Kind.item, name: id)])
+    #expect(b.event(id)?.title == "치과 — 새 메모")
+    #expect(resend == [id])
+    // 보낼 게 없는 쪽(a)은 그대로 지운다.
+    try a.apply([], deleted: [RecordRef(type: Kind.item, name: id)])
+    #expect(a.event(id) == nil)
+}

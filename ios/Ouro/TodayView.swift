@@ -5,8 +5,8 @@ import SwiftUI
 
 enum Sheet: Identifiable {
     case newEvent(Date), editEvent(String), newErrand(Date), errand(String), settings
-    /// 빠른 추가가 사람에게 넘긴 초안(개발 14).
-    case quick(EventDraft)
+    /// 빠른 추가가 사람에게 넘긴 초안과 그 까닭(개발 14).
+    case quick(EventDraft, [String])
     case proposal(ProposalView), errandProposal(ErrandProposalView)
     var id: String {
         switch self {
@@ -84,7 +84,7 @@ struct TodayView: View {
             Group {
                 switch s {
                 case .newEvent(let d): EventSheet(store: store, editing: nil, day: d, proposal: nil)
-                case .quick(let d): EventSheet(store: store, editing: nil, day: day, proposal: nil, prefill: d, onSaved: { quick = "" })
+                case .quick(let d, let why): EventSheet(store: store, editing: nil, day: day, proposal: nil, prefill: d, notice: why, onSaved: { quick = "" })
                 case .editEvent(let id): EventSheet(store: store, editing: id, day: day, proposal: nil)
                 case .proposal(let p): EventSheet(store: store, editing: nil, day: day, proposal: p)
                 case .newErrand(let d): ErrandSheet(store: store, editing: nil, day: d, proposal: nil)
@@ -133,18 +133,19 @@ struct TodayView: View {
                 try? await Task.sleep(for: .milliseconds(350))
                 quickFocused = true
             }
-        case .sheet(let d):
-            sheet = .quick(d)
+        case .sheet(let d, let why):
+            sheet = .quick(d, why)
         }
     }
 
     /// 빠른 입력 확정. 바로 넣으면 그날로 옮겨 보여 주고, 아니면 시트에서 사람이 저장할 때 입력칸을 비운다(맥과 같다).
-    private func quickCommit(_ d: EventDraft, _ direct: Bool) {
-        guard direct else {
-            quickFocused = false
-            sheet = .quick(d)
-            return
-        }
+    private func quickCommit(_ d: EventDraft, _ why: [String]?) {
+        guard let why else { return add(d) }
+        quickFocused = false
+        sheet = .quick(d, why)
+    }
+
+    private func add(_ d: EventDraft) {
         do {
             try store.createEvent(d)
             quick = ""

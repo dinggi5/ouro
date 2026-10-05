@@ -144,8 +144,9 @@ public final class RecordStore {
         let before = (records, saves, deletes, version)
         var resend: [String] = []
         for ref in deleted {
-            if ref.type == Kind.item, hasRuns(ref.name), let r = records[ref.name] {
+            if (saves[ref.name] != nil || (ref.type == Kind.item && hasRuns(ref.name))), let r = records[ref.name] {
                 // 실행 기록이 있는 부탁은 지우지 않고 새로 올린다(바깥으로 나간 원문 보존 — 맥과 같은 규칙).
+                // 아직 못 보낸 이 기기의 고침도 같다 — 지우면 그 고침이 조용히 사라진다(코덱스 개발 14 P0, 맥 `apply_delete` 와 같다).
                 records[ref.name] = WireRecord(type: r.type, name: r.name, fields: r.fields, secret: r.secret, system: nil)
                 markSave(ref.name)
                 resend.append(ref.name)

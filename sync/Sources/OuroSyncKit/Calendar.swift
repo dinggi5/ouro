@@ -327,16 +327,15 @@ extension RecordStore {
     /// 휴지통으로(일정·부탁 둘 다). 맥이 7일 뒤 비우면 그 삭제가 동기화로 온다.
     public func trash(_ id: String) throws {
         guard var b = bag(id), b.int("deleted_at") == nil else { throw OuroError("이미 지워졌어요") }
-        let now = Clock.ms()
-        b["deleted_at"] = .int(now)
-        b["updated_at"] = .int(now)
+        b["deleted_at"] = .int(Clock.ms())
+        b["updated_at"] = .int(Self.nextRev(b))
         try put(Kind.item, id, b)
     }
 
     public func restore(_ id: String) throws {
         guard var b = bag(id), b.int("deleted_at") != nil else { throw OuroError("되살릴 게 없어요") }
         b["deleted_at"] = .null
-        b["updated_at"] = .int(Clock.ms())
+        b["updated_at"] = .int(Self.nextRev(b))
         try put(Kind.item, id, b)
     }
 

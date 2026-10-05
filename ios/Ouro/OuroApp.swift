@@ -18,8 +18,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 enum AppRequest: Equatable {
     /// 입력칸에 포커스.
     case quickAdd
-    /// 사람이 보고 저장해야 하는 초안(날짜를 못 찾았거나 경고가 있을 때) — 일정 시트로 연다.
-    case sheet(EventDraft)
+    /// 사람이 보고 저장해야 하는 초안(날짜를 못 찾았거나 경고가 있을 때) — 일정 시트로, 까닭과 함께.
+    case sheet(EventDraft, [String])
 }
 
 @MainActor

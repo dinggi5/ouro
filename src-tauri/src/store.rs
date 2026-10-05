@@ -762,11 +762,13 @@ impl Store {
     }
 
     /// 휴지통으로. 되돌리기(`restore_event`) 가 되살린다.
+    /// 판(`updated_at`)은 고치기처럼 옛 판보다 반드시 크게 — 시계가 앞선 기기의 판을 받은 뒤 지우면 합치기에서 «살아 있는 옛 판» 이 이겨
+    /// 지운 게 돌아온다(코덱스 개발 14). 부탁 지우기·되살리기·반복 끊기도 같은 규칙.
     pub(crate) fn delete_event(&self, id: i64) -> Result<(), String> {
         let n = self
             .conn()
             .execute(
-                "UPDATE items SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1 AND kind = 'event' AND deleted_at IS NULL",
+                "UPDATE items SET deleted_at = ?2, updated_at = MAX(?2, updated_at + 1) WHERE id = ?1 AND kind = 'event' AND deleted_at IS NULL",
                 params![id, now_ms()],
             )
             .map_err(|e| e.to_string())?;
@@ -780,7 +782,7 @@ impl Store {
         let n = self
             .conn()
             .execute(
-                "UPDATE items SET deleted_at = NULL, updated_at = ?2 WHERE id = ?1 AND kind = 'event' AND deleted_at IS NOT NULL",
+                "UPDATE items SET deleted_at = NULL, updated_at = MAX(?2, updated_at + 1) WHERE id = ?1 AND kind = 'event' AND deleted_at IS NOT NULL",
                 params![id, now_ms()],
             )
             .map_err(|e| e.to_string())?;

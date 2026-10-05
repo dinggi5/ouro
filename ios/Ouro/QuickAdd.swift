@@ -23,8 +23,10 @@ enum QuickAdd {
     }
 
     /// 시트로 열 값 — 알아들은 데까지 채우고, 날짜를 못 찾았으면 `day` 의 빈 시트에 제목만(맥 `quickToDraft`).
+    /// 날짜는 찾았는데 이 시간대에 없는 시각이면(서머타임) 그 날의 기본 시각으로 — 날짜까지 잃지 않는다(코덱스 개발 14).
     static func sheet(_ q: QuickDraft?, text: String, day: Date) -> EventDraft {
-        var d = EventSheet.blank(day: day)
+        let found = q?.startDate.flatMap { QuickParse.day($0) }
+        var d = EventSheet.blank(day: found ?? day)
         // 파서가 글을 거절했으면(NUL 등) 친 글 그대로 — 사람이 쓴 걸 잃지 않는다.
         d.title = q?.title ?? text.trimmingCharacters(in: .whitespacesAndNewlines)
         if let q, let w = QuickParse.when(q) {
@@ -33,6 +35,17 @@ enum QuickAdd {
             d.end = w.end
         }
         return d
+    }
+
+    /// 왜 바로 안 넣고 사람에게 넘기나 — 시트 맨 위에 보인다.
+    static func why(_ q: QuickDraft?) -> [String] {
+        let none = "날짜를 못 찾았어요 — 날짜를 골라 주세요"
+        guard let q else { return [none] }
+        // «2월 30일» 같은 건 파서가 까닭을 이미 적었다 — 그것부터.
+        if q.startDate == nil { return q.warnings + [none] }
+        if q.title.isEmpty { return q.warnings + ["제목을 적어 주세요"] }
+        if QuickParse.when(q) == nil { return q.warnings + ["이 시간대에 없는 시각이에요(서머타임) — 시각을 골라 주세요"] }
+        return q.warnings
     }
 
     /// 카드·Siri 가 말할 때: «내일 · 10월 7일 수요일 · 오후 3:00 – 오후 4:00».
@@ -76,10 +89,10 @@ struct AddEventIntent: AppIntent {
         let q = QuickParse.parse(text)
         guard let d = QuickAdd.direct(q) else {
             let draft = QuickAdd.sheet(q, text: text, day: Date())
-            let why = q?.startDate == nil ? "날짜를 못 찾았어요" : (q?.warnings.first ?? "확인이 필요해요")
+            let why = QuickAdd.why(q)
             // 사람이 «계속» 을 누르면 앱이 앞으로 나오고 여기로 돌아온다(거절하면 던져서 끝난다 — 아무것도 안 넣었다).
-            try await continueInForeground(IntentDialog(stringLiteral: "\(why) — Ouro 에서 확인하고 넣어 주세요."))
-            model.request = .sheet(draft)
+            try await continueInForeground(IntentDialog(stringLiteral: "\(why.first ?? "확인이 필요해요") — Ouro 에서 확인하고 넣어 주세요."))
+            model.request = .sheet(draft, why)
             return .result(dialog: "확인하고 저장해 주세요.")
         }
         try model.store.createEvent(d)
@@ -113,8 +126,8 @@ struct QuickField: View {
     var focused: FocusState<Bool>.Binding
     /// 보고 있는 날(오늘이 아니면) — 날짜 없는 «3시 치과» 가 그날로.
     let day: Date
-    /// 바로 넣기(초안) / 시트로 열기(초안).
-    let commit: (EventDraft, Bool) -> Void
+    /// 초안과, 사람에게 넘길 까닭(nil = 바로 넣기).
+    let commit: (EventDraft, [String]?) -> Void
 
     var body: some View {
         let cal = Calendar.current
@@ -123,7 +136,7 @@ struct QuickField: View {
         let direct = QuickAdd.direct(q)
         VStack(spacing: 8) {
             if focused.wrappedValue, !trimmed.isEmpty {
-                Button { commit(QuickAdd.sheet(q, text: trimmed, day: day), false) } label: {
+                Button { commit(QuickAdd.sheet(q, text: trimmed, day: day), QuickAdd.why(q)) } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(q?.title.isEmpty == false ? q!.title : "제목 없음")
                             .font(.bodyStrong).foregroundStyle(q?.title.isEmpty == false ? Color.ink : Color.inkMuted).lineLimit(1)
@@ -148,7 +161,7 @@ struct QuickField: View {
                 .submitLabel(.done)
                 .onSubmit {
                     guard !trimmed.isEmpty else { return }
-                    if let direct { commit(direct, true) } else { commit(QuickAdd.sheet(q, text: trimmed, day: day), false) }
+                    if let direct { commit(direct, nil) } else { commit(QuickAdd.sheet(q, text: trimmed, day: day), QuickAdd.why(q)) }
                 }
                 .padding(.horizontal, 16).frame(height: 48)
                 .background(RoundedRectangle(cornerRadius: 12).fill(Color.sunken))

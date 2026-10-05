@@ -772,6 +772,17 @@ pub fn parse(text: &str, now: NaiveDateTime, base: Option<NaiveDate>) -> Draft {
         warnings.push("반복은 아직 못 만들어요 — 첫 번 한 번만 넣어요".into());
     }
 
+    // 쓰지 않은 날짜·시각이 남았으면(«3시 말고 5시», «3시 또는 5시») 어느 쪽인지 모른다 — 첫 것으로 잡되 사람이 보게.
+    // 경고가 없으면 맥은 ↩ 로, iOS Siri 는 화면 없이 바로 넣는다(코덱스 개발 14 P1). 못 읽는 조각은 위에서 이미 경고했다.
+    if warnings.is_empty() {
+        let inside = |sp: &Range<usize>| used.iter().any(|u| u.start <= sp.start && sp.end <= u.end);
+        let left = s.dates.iter().any(|t| !inside(&t.span) && resolve_date(t.v, today, None).is_some())
+            || s.times.iter().any(|t| !inside(&t.span) && resolve_time(t.v, None).is_some());
+        if left {
+            warnings.push("날짜나 시각이 여럿이라 첫 것으로 잡았어요 — 맞는지 봐 주세요".into());
+        }
+    }
+
     draft.title = title_without(text, &used);
     draft.miss = if text.trim().is_empty() {
         None
@@ -1031,5 +1042,17 @@ mod tests {
         for text in ["내일 3시 치과", "매주 월 9시 브리핑", "2월 30일", "치과"] {
             assert_eq!(p(text), p(text));
         }
+    }
+
+    // ── 쓰지 않은 날짜·시각이 남으면 경고(코덱스 개발 14) — 경고가 없으면 Siri 가 화면 없이 넣는다 ──
+    #[test]
+    fn leftover_when_is_warned() {
+        for t in ["내일 3시 말고 5시 치과", "3시 또는 5시 회의", "금요일 아니면 토요일 등산"] {
+            let d = p(t);
+            assert_eq!(d.warnings, vec!["날짜나 시각이 여럿이라 첫 것으로 잡았어요 — 맞는지 봐 주세요".to_string()], "«{t}» → {d:?}");
+        }
+        // 범위로 이어 쓴 건 하나다.
+        assert!(p("내일 3시~5시 회의").warnings.is_empty());
+        assert!(p("10월 3일부터 5일까지 여행").warnings.is_empty());
     }
 }

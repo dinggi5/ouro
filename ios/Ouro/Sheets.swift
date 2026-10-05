@@ -46,19 +46,26 @@ struct EventSheet: View {
     let editing: String?
     let proposal: ProposalView?
     /// 열 때 본 판 — 그 사이 맥에서 고친 게 오면 저장을 거절한다(코덱스 개발 13 P1).
-    private let seen: Int64?
+    /// 초안과 같이 @State 에 둔다: 동기화로 화면이 다시 그려지면 init 이 또 불리는데, 그때 판만 새로 읽으면 옛 초안이 검사를 통과한다(코덱스 개발 14).
+    @State private var seen: Int64?
+    /// 빠른 추가가 사람에게 넘긴 까닭(파서 경고 등) — 왜 바로 안 넣었는지.
+    private let notice: [String]
     private let onSaved: () -> Void
     @State private var d: EventDraft
     @State private var error: String?
     @Environment(\.dismiss) private var dismiss
 
     /// `prefill` = 빠른 추가가 넘긴 새 일정 초안(개발 14). `onSaved` = 저장(새로 넣기·고치기·승인)이 디스크에 적혔을 때.
-    init(store: RecordStore, editing: String?, day: Date, proposal: ProposalView?, prefill: EventDraft? = nil, onSaved: @escaping () -> Void = {}) {
+    init(
+        store: RecordStore, editing: String?, day: Date, proposal: ProposalView?, prefill: EventDraft? = nil, notice: [String] = [],
+        onSaved: @escaping () -> Void = {}
+    ) {
         self.store = store
         self.editing = editing
         self.proposal = proposal
+        self.notice = notice
         self.onSaved = onSaved
-        seen = editing.flatMap { store.event($0)?.updatedAt }
+        _seen = State(initialValue: editing.flatMap { store.event($0)?.updatedAt })
         var d = EventDraft()
         if let p = proposal {
             d = p.event
@@ -98,6 +105,10 @@ struct EventSheet: View {
         ) {
             Section {
                 TextField("제목", text: $d.title).font(.body17)
+            } footer: {
+                if !notice.isEmpty {
+                    Text(notice.joined(separator: "\n")).font(.micro)
+                }
             }
             Section {
                 Toggle("종일", isOn: $d.allDay.animation(.easeOut(duration: 0.2)))
@@ -172,7 +183,7 @@ struct ErrandSheet: View {
     let store: RecordStore
     let editing: String?
     let proposal: ErrandProposalView?
-    private let seen: Int64?
+    @State private var seen: Int64?
     @State private var d: ErrandDraft
     @State private var error: String?
     @State private var openRun: RunView?
@@ -182,7 +193,7 @@ struct ErrandSheet: View {
         self.store = store
         self.editing = editing
         self.proposal = proposal
-        seen = editing.flatMap { store.errand($0)?.updatedAt }
+        _seen = State(initialValue: editing.flatMap { store.errand($0)?.updatedAt })
         var d = ErrandDraft()
         let cal = Calendar.current
         if let p = proposal {

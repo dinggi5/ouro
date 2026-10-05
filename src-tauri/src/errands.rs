@@ -571,7 +571,7 @@ impl Store {
         }
         let n = conn
             .execute(
-                "UPDATE items SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1 AND kind = 'errand' AND deleted_at IS NULL",
+                "UPDATE items SET deleted_at = ?2, updated_at = MAX(?2, updated_at + 1) WHERE id = ?1 AND kind = 'errand' AND deleted_at IS NULL",
                 params![id, now_ms()],
             )
             .map_err(|e| e.to_string())?;
@@ -585,7 +585,7 @@ impl Store {
         let n = self
             .conn()
             .execute(
-                "UPDATE items SET deleted_at = NULL, updated_at = ?2 WHERE id = ?1 AND kind = 'errand' AND deleted_at IS NOT NULL",
+                "UPDATE items SET deleted_at = NULL, updated_at = MAX(?2, updated_at + 1) WHERE id = ?1 AND kind = 'errand' AND deleted_at IS NOT NULL",
                 params![id, now_ms()],
             )
             .map_err(|e| e.to_string())?;
@@ -783,7 +783,7 @@ impl Store {
                     };
                     insert_errand(&tx, &n, now).map_err(|e| e.to_string())?;
                     // updated_at 도 올린다 — 동기화가 «늦게 고친 쪽» 으로 합치므로, 안 올리면 다른 기기의 옛 판(규칙이 붙은)이 이긴다.
-                    tx.execute("UPDATE items SET rrule = NULL, updated_at = ?2 WHERE id = ?1", params![id, now])
+                    tx.execute("UPDATE items SET rrule = NULL, updated_at = MAX(?2, updated_at + 1) WHERE id = ?1", params![id, now])
                         .map_err(|e| e.to_string())?;
                 }
                 None => eprintln!("ouro: 반복의 다음 회차를 못 찾았어요 — {rule}"),
