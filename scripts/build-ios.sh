@@ -20,4 +20,4 @@ xcrun simctl boot "$SIM" 2>/dev/null || true
 xcrun simctl install "$SIM" "$APP"
 xcrun simctl terminate "$SIM" com.dinggi5.ouro.ios 2>/dev/null || true
 xcrun simctl launch "$SIM" com.dinggi5.ouro.ios "$@"
-open -a Simulator
+open "$(xcode-select -p)/Applications/Simulator.app" 2>/dev/null || true
