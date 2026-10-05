@@ -28,7 +28,7 @@ enum Demo {
         r.at = at(18)
         try? s.createErrand(r)
         let now = Clock.ms()
-        s.apply([
+        try? s.apply([
             WireRecord(type: Kind.run, name: "demo-run", bag: [
                 "item": .string(done), "status": .string("done"), "started_at": .int(at(9).ms), "finished_at": .int(at(9, 2).ms),
                 "response": .string("어제는 동기화 코어(CKSyncEngine 헬퍼)와 실행 맥 지정을 넣었어요. 리뷰 지적 15건을 반영했고, 테스트는 135개가 통과해요."),

@@ -39,18 +39,28 @@ public final class RecordStore {
         var version: Int
     }
 
+    /// 저장 파일이 있는데 못 읽었다 — 이 상태에선 아무것도 쓰지 않는다(빈 저장소로 덮으면 못 보낸 일정이 사라진다, 코덱스 개발 11 P0).
+    public private(set) var loadError: String?
+
     /// `url` 이 nil 이면 메모리에만(테스트).
     public init(url: URL?) {
         self.url = url
-        if let url, let data = try? Data(contentsOf: url), let d = try? JSONDecoder().decode(Disk.self, from: data) {
+        guard let url, FileManager.default.fileExists(atPath: url.path) else { return }
+        do {
+            let d = try JSONDecoder().decode(Disk.self, from: Data(contentsOf: url))
             records = d.records
             saves = d.saves
             deletes = d.deletes
             version = d.version
+        } catch {
+            loadError = "저장한 일정을 못 읽었어요 — 앱을 다시 켜 주세요(\(error.localizedDescription))"
+            sync.error = loadError
         }
     }
 
-    func persist() {
+    /// 디스크에 쓴다. 실패하면 던진다 — 받은 변경을 «적었다(ack)» 고 하기 전에 확인해야 한다(코덱스 개발 11 P0).
+    func persist() throws {
+        if let loadError { throw OuroError(loadError) }
         guard let url else { return }
         let d = Disk(records: records, saves: saves, deletes: deletes, version: version)
         do {
@@ -63,8 +73,26 @@ public final class RecordStore {
             #endif
             try JSONEncoder().encode(d).write(to: url, options: options)
         } catch {
-            sync.error = "저장 실패: \(error.localizedDescription)"
+            sync.error = "기기에 저장하지 못했어요: \(error.localizedDescription)"
+            throw OuroError("기기에 저장하지 못했어요 — 저장 공간을 확인해 주세요")
         }
+    }
+
+    /// 여러 레코드를 한 번에(제안 승인 = 새 항목 + 제안의 결정). 디스크에 못 쓰면 메모리도 되돌린다 —
+    /// 반쯤 쓰인 채 다시 켜면 «승인된 부탁 + 아직 기다리는 제안» 이 남아 두 번 승인될 수 있다(코덱스 개발 11 P1).
+    func putAll(_ items: [(String, String, Bag)]) throws {
+        let before = (records, saves, deletes, version)
+        for (type, name, bag) in items {
+            records[name] = WireRecord(type: type, name: name, bag: bag, system: records[name]?.system)
+            markSave(name)
+        }
+        do {
+            try persist()
+        } catch {
+            (records, saves, deletes, version) = before
+            throw error
+        }
+        announce(items.map(\.1))
     }
 
     /// 지금 보낼 것 전부(켤 때·실패 뒤 다시 알리기).
@@ -88,11 +116,8 @@ public final class RecordStore {
     // MARK: 이 기기에서 고치기
 
     /// 레코드 하나를 이 칸들로 덮는다(시스템 칸은 그대로). 보낼 것에 넣고 알린다.
-    func put(_ type: String, _ name: String, _ bag: Bag) {
-        records[name] = WireRecord(type: type, name: name, bag: bag, system: records[name]?.system)
-        markSave(name)
-        persist()
-        announce([name])
+    func put(_ type: String, _ name: String, _ bag: Bag) throws {
+        try putAll([(type, name, bag)])
     }
 
     // MARK: 동기화(브리지가 부른다)
@@ -114,7 +139,9 @@ public final class RecordStore {
 
     /// 받은 묶음을 합친다. 돌려주는 값 = 다시 보낼 이름들(내 쪽이 이긴 것).
     @discardableResult
-    public func apply(_ incoming: [WireRecord], deleted: [RecordRef]) -> [String] {
+    public func apply(_ incoming: [WireRecord], deleted: [RecordRef]) throws -> [String] {
+        if let loadError { throw OuroError(loadError) }
+        let before = (records, saves, deletes, version)
         var resend: [String] = []
         for ref in deleted {
             if ref.type == Kind.item, hasRuns(ref.name), let r = records[ref.name] {
@@ -147,19 +174,28 @@ public final class RecordStore {
                 resend.append(rec.name)
             }
         }
-        persist()
+        do {
+            try persist()
+        } catch {
+            (records, saves, deletes, version) = before
+            throw error
+        }
         if !resend.isEmpty { announce(resend) }
         return resend
     }
 
     /// 헬퍼가 서버 저장 결과를 알린다.
     public func sent(saved: [Saved], removed: [String], failed: [Failed]) {
+        var still: [String] = []
         for s in saved {
             if let r = records[s.name] {
                 records[s.name] = WireRecord(type: r.type, name: r.name, fields: r.fields, secret: r.secret, system: s.system)
             }
             if let v = inflight.removeValue(forKey: s.name), saves[s.name] == v {
                 saves.removeValue(forKey: s.name)
+            } else if saves[s.name] != nil {
+                // 보내는 사이 또 고쳤다 — 엔진은 이 이름을 «보냄» 으로 치웠으니 다시 알린다(코덱스 개발 11 P1).
+                still.append(s.name)
             }
         }
         for n in removed {
@@ -182,11 +218,34 @@ public final class RecordStore {
             }
             again = true
         }
-        persist()
+        try? persist()
         if again {
             let (s, d) = pendingRefs()
             onPending?(s, d)
+        } else if !still.isEmpty {
+            announce(still)
         }
+    }
+
+    /// iCloud 계정이 바뀌었거나 서버의 Ouro 데이터가 지워졌다 — 폰의 저장소는 그 계정의 거울이라 비운다
+    /// (다른 계정에 옛 계정의 글을 올리지 않게, 코덱스 개발 11 P1). 새 계정으로 로그인하면 엔진이 처음부터 받는다.
+    public func forgetAccount() {
+        records = [:]
+        saves = [:]
+        deletes = [:]
+        inflight = [:]
+        try? persist()
+    }
+
+    /// 서버 암호 키가 초기화됨 — 시스템 칸을 버리고 가진 것을 전부 다시 올린다(맥과 같은 처리).
+    public func reuploadAll() {
+        for (n, r) in records {
+            records[n] = WireRecord(type: r.type, name: r.name, fields: r.fields, secret: r.secret, system: nil)
+            markSave(n)
+        }
+        try? persist()
+        let (s, d) = pendingRefs()
+        onPending?(s, d)
     }
 
     /// 같은 제안을 두 기기가 따로 결정했고 이 기기의 결정이 졌다 — 진 승인이 만든 항목을 휴지통으로(한 번도 안 돈 것만).

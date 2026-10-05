@@ -65,8 +65,14 @@ public final class LocalBridge: Outlet, @unchecked Sendable {
             m.missing = missing
             await core?.receive(m)
         case "fetched":
-            store.apply(msg.records ?? [], deleted: msg.deleted ?? [])
-            await core?.receive(Inbound(op: "ack", id: msg.id))
+            do {
+                try store.apply(msg.records ?? [], deleted: msg.deleted ?? [])
+                await core?.receive(Inbound(op: "ack", id: msg.id))
+            } catch {
+                // 디스크에 못 적었으면 ack 하지 않는다 — 엔진이 «여기까지 받음» 을 저장하지 못하게 멈춰 두고,
+                // 다시 켜면 같은 변경을 다시 받는다(맥이 헬퍼를 내리는 것과 같은 효과, 코덱스 개발 11 P0).
+                store.sync.error = error.localizedDescription
+            }
         case "sent":
             store.sent(saved: msg.saved ?? [], removed: msg.removed ?? [], failed: msg.failed ?? [])
         case "synced":
@@ -75,8 +81,24 @@ public final class LocalBridge: Outlet, @unchecked Sendable {
             store.sync.lastSync = Date()
             store.sync.error = nil
         case "account":
-            if msg.account == "signOut" || msg.account == "switchAccounts" {
-                store.sync.error = "iCloud 계정이 바뀌었어요"
+            switch msg.account {
+            case "signIn":
+                store.sync.account = "available"
+                store.sync.error = nil
+            case "signOut", "switchAccounts":
+                // 폰의 저장소는 그 계정의 거울 — 비우고, 새 계정이면 엔진이 처음부터 받는다(엔진 상태 파일은 헬퍼 코어가 지웠다).
+                store.forgetAccount()
+                store.sync.lastSync = nil
+                store.sync.error = msg.account == "signOut" ? "iCloud 에서 로그아웃돼 일정을 비웠어요" : "iCloud 계정이 바뀌어 새로 받아요"
+            default:
+                break
+            }
+        case "zone_gone":
+            if msg.reason == "encryptedDataReset" {
+                store.reuploadAll()
+            } else {
+                store.forgetAccount()
+                store.sync.error = "iCloud 에서 Ouro 데이터가 지워졌어요"
             }
         case "error":
             // 계정이 문제면 엔진의 영어 오류 대신 계정 이야기를 한다.

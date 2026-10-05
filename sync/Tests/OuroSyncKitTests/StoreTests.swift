@@ -10,7 +10,7 @@ func twoStores() -> (RecordStore, RecordStore) { (RecordStore(url: nil), RecordS
 func ship(_ a: RecordStore, to b: RecordStore) {
     let (saves, deletes) = a.pendingRefs()
     let (recs, _) = a.provide(saves.map(\.name))
-    b.apply(recs, deleted: deletes)
+    try! b.apply(recs, deleted: deletes)
     a.sent(saved: recs.map { Saved(name: $0.name, system: "sys") }, removed: deletes.map(\.name), failed: [])
 }
 
@@ -58,7 +58,7 @@ func ship(_ a: RecordStore, to b: RecordStore) {
     defer { Clock.now = { Date() } }
     d.title = "새것"
     try a.updateEvent(id, d)
-    let resend = a.apply([old], deleted: [])
+    let resend = try a.apply([old], deleted: [])
     #expect(a.event(id)?.title == "새것")
     #expect(resend == [id])
 }
@@ -87,14 +87,14 @@ func ship(_ a: RecordStore, to b: RecordStore) {
         type: Kind.run, name: "run-1",
         bag: ["item": .string(id), "status": .string("done"), "started_at": .int(1), "finished_at": .int(2), "response": .string("답")],
         system: "s")
-    s.apply([run], deleted: [])
+    try s.apply([run], deleted: [])
     #expect(s.errand(id)?.run?.response == "답")
     #expect(s.errand(id)?.run?.read == false)
     s.markRead("run-1")
     #expect(s.errand(id)?.run?.read == true)
     #expect(throws: OuroError("이미 돈 부탁은 고칠 수 없어요 — 새 부탁으로 걸어 주세요")) { try s.updateErrand(id, d) }
     // 실행이 있는 부탁은 서버에서 지워져도 남는다.
-    s.apply([], deleted: [RecordRef(type: Kind.item, name: id)])
+    try s.apply([], deleted: [RecordRef(type: Kind.item, name: id)])
     #expect(s.errand(id) != nil)
 }
 
@@ -107,7 +107,7 @@ func ship(_ a: RecordStore, to b: RecordStore) {
             "client": .string("claude-code"), "title": .string("치과"), "notes": .string(""), "all_day": .int(0),
             "start_at": .int(now + 3_600_000), "end_at": .int(now + 7_200_000), "status": .string("pending"), "created_at": .int(now),
         ], system: "s")
-    s.apply([p], deleted: [])
+    try s.apply([p], deleted: [])
     #expect(s.pendingProposals().count == 1)
     #expect(s.events(on: Date(ms: now + 3_600_000)).isEmpty, "승인 전엔 일정이 아니다")
     let ev = try s.approveProposal("p1")
@@ -125,8 +125,8 @@ func ship(_ a: RecordStore, to b: RecordStore) {
             "client": .string("claude"), "prompt": .string("정리"), "start_at": .int(now + 3_600_000), "status": .string("pending"),
             "created_at": .int(now), "late": .string("run"), "target": .string("claude"), "allowed_tools": .string(""), "depth": .int(1),
         ], system: "s")
-    a.apply([p], deleted: [])
-    b.apply([p], deleted: [])
+    try a.apply([p], deleted: [])
+    try b.apply([p], deleted: [])
     _ = try a.approveErrandProposal("ep")
     Clock.now = { Date().addingTimeInterval(5) }
     defer { Clock.now = { Date() } }
@@ -167,7 +167,7 @@ let fixtures = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appen
     let data = try Data(contentsOf: fixtures.appendingPathComponent("mac-records.json"))
     let recs = try JSONDecoder().decode([WireRecord].self, from: data)
     let s = RecordStore(url: nil)
-    s.apply(recs, deleted: [])
+    try s.apply(recs, deleted: [])
     let item = try #require(recs.first { $0.type == Kind.item && $0.fields["kind"] == .string("errand") })
     let e = try #require(s.errand(item.name))
     #expect(e.prompt == "어제 커밋 정리해 줘")
@@ -207,4 +207,56 @@ let fixtures = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appen
     let fixed = try JSONDecoder().decode([WireRecord].self, from: Data(contentsOf: url))
     #expect(Set(fixed.map { Set($0.fields.keys) }) == Set(recs.map { Set($0.fields.keys) }))
     #expect(Set(fixed.map { Set($0.secret.keys) }) == Set(recs.map { Set($0.secret.keys) }))
+}
+
+@Test @MainActor func brokenFileIsNeverOverwritten() throws {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("ouro-\(UUID().uuidString)/records.json")
+    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data("{망가진".utf8).write(to: url)
+    let s = RecordStore(url: url)
+    #expect(s.loadError != nil)
+    var d = EventDraft()
+    d.title = "새 일정"
+    #expect(throws: OuroError.self) { try s.createEvent(d) }
+    #expect(throws: OuroError.self) { try s.apply([], deleted: []) }
+    #expect(try String(contentsOf: url, encoding: .utf8) == "{망가진", "원래 파일은 그대로")
+}
+
+@Test @MainActor func editDuringUploadIsAnnouncedAgain() throws {
+    let s = RecordStore(url: nil)
+    var announced: [String] = []
+    s.onPending = { saves, _ in announced += saves.map(\.name) }
+    var d = EventDraft()
+    d.title = "A"
+    let id = try s.createEvent(d)
+    _ = s.provide([id])
+    d.title = "B"
+    try s.updateEvent(id, d)
+    announced = []
+    s.sent(saved: [Saved(name: id, system: "x")], removed: [], failed: [])
+    #expect(s.pendingCount == 1)
+    #expect(announced == [id], "엔진이 치운 이름을 다시 알린다")
+}
+
+@Test @MainActor func weekdaySeriesStartsOnAWeekday() throws {
+    let s = RecordStore(url: nil)
+    var r = ErrandDraft()
+    r.prompt = "평일 브리핑"
+    r.repeatRule = "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"
+    // 2026-10-10 은 토요일.
+    r.at = Calendar.current.date(from: DateComponents(year: 2026, month: 10, day: 10, hour: 9))!
+    let id = try s.createErrand(r)
+    let at = try #require(s.errand(id)).at
+    #expect(Calendar.current.component(.weekday, from: at) == 2, "월요일")
+    #expect(Calendar.current.component(.hour, from: at) == 9)
+}
+
+@Test @MainActor func accountChangeEmptiesTheMirror() throws {
+    let s = RecordStore(url: nil)
+    var d = EventDraft()
+    d.title = "옛 계정"
+    try s.createEvent(d)
+    s.forgetAccount()
+    #expect(s.records.isEmpty)
+    #expect(s.pendingCount == 0)
 }

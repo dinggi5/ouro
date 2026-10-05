@@ -112,6 +112,8 @@ public struct ErrandProposalView: Identifiable, Equatable, Sendable {
     public var prompt: String
     public var at: Date
     public var target: String
+    /// 놓쳤을 때 — 고치기 시트가 원래 값을 지키게(코덱스 개발 11 P2).
+    public var late: String
     public var createdAt: Int64
 }
 
@@ -235,7 +237,7 @@ extension RecordStore {
             else { return nil }
             return ErrandProposalView(
                 id: r.name, client: b.str("client") ?? "AI", prompt: b.str("prompt") ?? "",
-                at: Date(ms: b.int("start_at") ?? 0), target: b.str("target") ?? "claude", createdAt: c)
+                at: Date(ms: b.int("start_at") ?? 0), target: b.str("target") ?? "claude", late: b.str("late") ?? "run", createdAt: c)
         }
         .sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
     }
@@ -294,7 +296,7 @@ extension RecordStore {
         var b = newItem(kind: "event", origin: origin, now: now)
         b.merge(try eventFields(d)) { _, new in new }
         let name = UUID().uuidString.lowercased()
-        put(Kind.item, name, b)
+        try put(Kind.item, name, b)
         return name
     }
 
@@ -302,7 +304,7 @@ extension RecordStore {
         guard var b = bag(id), b.str("kind") == "event", b.int("deleted_at") == nil else { throw OuroError("이미 지워진 일정이에요") }
         b.merge(try eventFields(d)) { _, new in new }
         b["updated_at"] = .int(Clock.ms())
-        put(Kind.item, id, b)
+        try put(Kind.item, id, b)
     }
 
     /// 휴지통으로(일정·부탁 둘 다). 맥이 7일 뒤 비우면 그 삭제가 동기화로 온다.
@@ -311,14 +313,14 @@ extension RecordStore {
         let now = Clock.ms()
         b["deleted_at"] = .int(now)
         b["updated_at"] = .int(now)
-        put(Kind.item, id, b)
+        try put(Kind.item, id, b)
     }
 
     public func restore(_ id: String) throws {
         guard var b = bag(id), b.int("deleted_at") != nil else { throw OuroError("되살릴 게 없어요") }
         b["deleted_at"] = .null
         b["updated_at"] = .int(Clock.ms())
-        put(Kind.item, id, b)
+        try put(Kind.item, id, b)
     }
 
     func errandFields(_ d: ErrandDraft) throws -> Bag {
@@ -328,12 +330,21 @@ extension RecordStore {
         if !["run", "skip"].contains(d.late) { throw OuroError("놓쳤을 때 할 일이 이상해요") }
         if !Rules.targets.contains(d.target) { throw OuroError("부탁 받을 쪽이 이상해요") }
         if !Rules.repeatChoices.contains(d.repeatRule) { throw OuroError("반복이 이상해요") }
-        let at = Int64((d.at.timeIntervalSince1970 / 60).rounded(.down) * 60_000)
+        let at = firstAt(d).ms
         return [
             "title": .string(Rules.title(of: prompt)), "prompt": .string(prompt), "start_at": .int(at), "end_at": .int(at),
             "all_day": .int(0), "start_date": .null, "end_date": .null, "target": .string(d.target), "late": .string(d.late),
             "rrule": d.repeatRule.isEmpty ? .null : .string(d.repeatRule),
         ]
+    }
+
+    /// 평일 반복인데 주말에 걸면 첫 회차를 다음 월요일 같은 시각으로(맥 `first_at` 과 같다 — 실행 맥은 받은 시각 그대로 돌린다).
+    func firstAt(_ d: ErrandDraft) -> Date {
+        var at = Date(timeIntervalSince1970: (d.at.timeIntervalSince1970 / 60).rounded(.down) * 60)
+        if d.repeatRule == "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR" {
+            while cal.isDateInWeekend(at) { at = cal.date(byAdding: .day, value: 1, to: at)! }
+        }
+        return at
     }
 
     /// 사람이 폰에서 거는 부탁 — 만들 때 승인이 찍힌다(사람이 쓴 글). 돌리는 건 실행 맥.
@@ -348,7 +359,7 @@ extension RecordStore {
             // 반복이면 첫 회차가 곧 묶음이다(맥 `insert_errand` 와 같다).
             "series": d.repeatRule.isEmpty ? .null : .string(name),
         ]) { _, new in new }
-        put(Kind.item, name, b)
+        try put(Kind.item, name, b)
         return name
     }
 
@@ -356,16 +367,25 @@ extension RecordStore {
     public func updateErrand(_ id: String, _ d: ErrandDraft) throws {
         guard var b = bag(id), b.str("kind") == "errand", b.int("deleted_at") == nil else { throw OuroError("이미 지워진 부탁이에요") }
         if !runs(of: id).isEmpty { throw OuroError("이미 돈 부탁은 고칠 수 없어요 — 새 부탁으로 걸어 주세요") }
+        // 잇는 대화가 있으면 받는 쪽·반복을 못 바꾼다(맥 `update_errand` 와 같다 — 실행 맥은 받은 값을 다시 검사하지 않는다).
+        if b.str("resume_session") != nil || b.str("resume_run") != nil,
+            d.target != b.str("target") || !d.repeatRule.isEmpty
+        {
+            throw OuroError("이어서 하는 부탁은 받는 쪽·반복을 바꿀 수 없어요")
+        }
+        let oldStart = b.int("start_at")
         b.merge(try errandFields(d)) { _, new in new }
+        // 사람이 시각을 옮기면 그 시각이 새 기준 — 서머타임으로 밀렸던 원래 시각은 버린다(맥과 같다).
+        if b.int("start_at") != oldStart { b["wall_time"] = .null }
         if d.repeatRule.isEmpty == false, b.str("series") == nil { b["series"] = .string(id) }
         b["updated_at"] = .int(Clock.ms())
-        put(Kind.item, id, b)
+        try put(Kind.item, id, b)
     }
 
     public func markRead(_ run: String) {
-        guard var b = bag(run), b.int("read_at") == nil else { return }
+        guard var b = bag(run), b.int("read_at") == nil, b.str("status") == "done" else { return }
         b["read_at"] = .int(Clock.ms())
-        put(Kind.run, run, b)
+        try? put(Kind.run, run, b)
     }
 
     // MARK: 제안 — 사람이 누르는 승인만이 일정·부탁을 만든다(CLAUDE.md 불변 규칙)
@@ -387,11 +407,14 @@ extension RecordStore {
     public func approveProposal(_ id: String, edited: EventDraft? = nil) throws -> String {
         var p = try pendingProposal(id, Kind.proposal)
         let draft = edited ?? pendingProposals(now: Clock.ms()).first { $0.id == id }?.event ?? EventDraft()
-        let event = try createEvent(draft, origin: "mcp")
+        let now = Clock.ms()
+        var b = newItem(kind: "event", origin: "mcp", now: now)
+        b.merge(try eventFields(draft)) { _, new in new }
+        let event = UUID().uuidString.lowercased()
         p["status"] = .string("approved")
-        p["decided_at"] = .int(Clock.ms())
+        p["decided_at"] = .int(now)
         p["event"] = .string(event)
-        put(Kind.proposal, id, p)
+        try putAll([(Kind.item, event, b), (Kind.proposal, id, p)])
         return event
     }
 
@@ -400,7 +423,7 @@ extension RecordStore {
         var p = try pendingProposal(id, type)
         p["status"] = .string("rejected")
         p["decided_at"] = .int(Clock.ms())
-        put(type, id, p)
+        try put(type, id, p)
     }
 
     /// 부탁 제안 승인 — 🔴 AI 가 낸 글이 부탁이 되는 길. 사람이 본(고친) 글이 저장되고 승인이 찍힌다.
@@ -424,11 +447,10 @@ extension RecordStore {
             "parent_run": p["parent_run"] ?? .null, "carry": .int(0),
             "series": d.repeatRule.isEmpty ? .null : .string(name),
         ]) { _, new in new }
-        put(Kind.item, name, b)
         p["status"] = .string("approved")
         p["decided_at"] = .int(now)
         p["errand"] = .string(name)
-        put(Kind.errandProposal, id, p)
+        try putAll([(Kind.item, name, b), (Kind.errandProposal, id, p)])
         return name
     }
 }

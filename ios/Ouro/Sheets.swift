@@ -164,6 +164,7 @@ struct ErrandSheet: View {
             d.prompt = p.prompt
             d.at = p.at
             d.target = p.target
+            d.late = p.late
         } else if let id = editing, let e = store.errand(id) {
             d.prompt = e.prompt
             d.at = e.at
@@ -206,7 +207,9 @@ struct ErrandSheet: View {
                 } header: {
                     Text("답").foregroundStyle(Color.ai)
                 }
-                .onAppear { if latest.status == "done" { store.markRead(latest.name) } }
+                // 열어 둔 사이 답이 와도 읽음으로(코덱스 개발 11 P2) — markRead 는 «done» 일 때만 적는다.
+                .onAppear { store.markRead(latest.name) }
+                .onChange(of: latest.status) { _, _ in store.markRead(latest.name) }
             }
             Section {
                 if locked {
@@ -260,6 +263,7 @@ struct ErrandSheet: View {
         .sheet(item: $openRun) { r in
             NavigationStack {
                 ScrollView { AnswerBlock(run: r).padding(20) }
+                    .onAppear { store.markRead(r.name) }
                     .background(Color.canvas)
                     .navigationTitle("지난 답").navigationBarTitleDisplayMode(.inline)
             }
