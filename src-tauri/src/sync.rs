@@ -301,6 +301,8 @@ fn enqueue_save(conn: &Connection, key: &str, tbl: &str, rid: Option<i64>) -> ru
 /// 동기화를 처음 켤 때(또는 서버 데이터가 초기화됐을 때) 가진 것을 전부 보낼 목록에.
 fn enqueue_all(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute("UPDATE sync_flags SET v = v + 1 WHERE k = 'seq'", [])?;
+    // 이때 올리는 것은 «고친 것» 이 아니라 «가진 것 전부» 다 — 서버 삭제가 와도 되살리지 않게 때를 적어 둔다(`apply_delete`).
+    put_setting(conn, "sync_all_at", &now_ms().to_string())?;
     for s in TABLES {
         conn.execute(
             &format!(
@@ -618,8 +620,9 @@ fn undo_losing_approval(conn: &Connection, ty: &str, local: &Map<String, Value>,
 
 /// 서버에서 지워진 레코드. 실행 기록이 남은 부탁은 지우지 않는다 — 바깥으로 나간 원문을 지키고(CLAUDE.md 불변 규칙),
 /// 서버엔 다시 올린다(다른 기기가 그 실행을 아직 못 받았을 수 있다).
-/// 아직 못 보낸 이 기기의 고침이 있어도 같다 — 오래 꺼져 있던 기기에서 고친 것이 그 사이 비운 휴지통에 조용히 지워지지 않게
+/// 아직 못 보낸 이 기기의 고침이 있는 일정·부탁도 같다 — 오래 꺼져 있던 기기에서 고친 것이 그 사이 비운 휴지통에 조용히 지워지지 않게
 /// 되살려 올린다(코덱스 개발 14 P0). 잃는 것보다 한 번 더 지우게 하는 게 낫다.
+/// 단, 동기화를 (다시) 켜며 «전부» 올린 것은 고침이 아니다 — 그 뒤에 고친 것만(`sync_all_at`, 코덱스 개발 14 2차).
 fn apply_delete(conn: &Connection, ty: &str, name: &str) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM sync_inbox WHERE name = ?1", [name])?;
     conn.execute("DELETE FROM sync_meta WHERE name = ?1", [name])?;
@@ -632,11 +635,17 @@ fn apply_delete(conn: &Connection, ty: &str, name: &str) -> rusqlite::Result<()>
         return Ok(());
     };
     let key = format!("{}:{id}", s.table);
-    let unsent: bool = conn.query_row("SELECT EXISTS (SELECT 1 FROM sync_outbox WHERE key = ?1 AND op = 'save')", [&key], |r| r.get(0))?;
-    if unsent {
-        return enqueue_save(conn, &key, s.table, Some(id));
-    }
     if s.ty == "Item" {
+        let all_at = setting(conn, "sync_all_at")?.and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+        let edited: bool = conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sync_outbox o JOIN items i ON i.id = ?2
+                            WHERE o.key = ?1 AND o.op = 'save' AND i.updated_at > ?3)",
+            params![&key, id, all_at],
+            |r| r.get(0),
+        )?;
+        if edited {
+            return enqueue_save(conn, &key, s.table, Some(id));
+        }
         let has_runs: bool = conn.query_row("SELECT EXISTS (SELECT 1 FROM runs WHERE item_id = ?1)", [id], |r| r.get(0))?;
         if has_runs {
             return enqueue_save(conn, &key, s.table, Some(id));
@@ -1486,6 +1495,17 @@ mod tests {
         drain(&a);
         apply(&a, &[], &[("Item".into(), uid)]).unwrap();
         assert!(a.get_event(ev.id).unwrap().is_none());
+
+        // 동기화를 다시 켜며 «전부» 올린 것은 고침이 아니다 — 서버 삭제가 오면 지운다(2차).
+        let old = a.create_event(&event("옛 일정", 1_800_000_000_000)).unwrap();
+        drain(&a);
+        let old_uid = uid_of(&a, "items", old.id);
+        set_on(&a, false).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        set_on(&a, true).unwrap();
+        assert!(outbox_since(&a.conn(), 0).unwrap().iter().any(|p| p.name == old_uid && p.save), "다시 켜면 전부 올린다");
+        apply(&a, &[], &[("Item".into(), old_uid)]).unwrap();
+        assert!(a.get_event(old.id).unwrap().is_none(), "고친 적 없는 옛 일정은 되살리지 않는다");
     }
 
     #[test]
