@@ -361,13 +361,16 @@ function App() {
   }, [errandSheet, openSheetErrand]);
   // 시트를 열어 둔 채 답이 오면(도는 중에 열었거나 같은 시트에서 다시 돌렸을 때) 그 답도 «읽음» — 안 그러면 읽고 닫아도
   // 점과 메뉴바 엔소가 «답 도착» 에 남는다(코덱스 개발 13 1차). 창이 숨어 있으면 보일 때까지 미룬다(안 본 답을 읽음으로 하지 않게).
+  const reloadRef = useRef(reload);
+  reloadRef.current = reload;
   const unreadInSheet = openSheetErrand?.run?.status === "done" && !openSheetErrand.run.read ? openSheetErrand.run.id : null;
   useEffect(() => {
     if (unreadInSheet === null) return;
     const mark = () => {
       if (document.visibilityState !== "visible") return;
       document.removeEventListener("visibilitychange", mark);
-      errandApi.markRead(unreadInSheet).then(() => void reload(), () => {});
+      // 읽음 응답을 기다리는 사이 달을 넘겼을 수 있다 — 그때의 reload(옛 범위)가 아니라 지금의 것을 부른다(코덱스 개발 13 2차).
+      errandApi.markRead(unreadInSheet).then(() => void reloadRef.current(), () => {});
     };
     mark();
     document.addEventListener("visibilitychange", mark);
