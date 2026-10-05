@@ -234,7 +234,16 @@ public final class RecordStore {
         saves = [:]
         deletes = [:]
         inflight = [:]
-        try? persist()
+        do {
+            try persist()
+        } catch {
+            // 빈 저장소를 못 썼으면 파일을 지운다. 그것도 안 되면 쓰기를 막는다 — 다시 켤 때 옛 계정의 글이
+            // 새 계정으로 올라가지 않게(코덱스 개발 11 2차).
+            if let url, (try? FileManager.default.removeItem(at: url)) == nil, FileManager.default.fileExists(atPath: url.path) {
+                loadError = "옛 iCloud 계정의 일정을 지우지 못했어요 — 앱을 지웠다 다시 깔아 주세요"
+                sync.error = loadError
+            }
+        }
     }
 
     /// 서버 암호 키가 초기화됨 — 시스템 칸을 버리고 가진 것을 전부 다시 올린다(맥과 같은 처리).

@@ -342,7 +342,10 @@ extension RecordStore {
     func firstAt(_ d: ErrandDraft) -> Date {
         var at = Date(timeIntervalSince1970: (d.at.timeIntervalSince1970 / 60).rounded(.down) * 60)
         if d.repeatRule == "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR" {
-            while cal.isDateInWeekend(at) { at = cal.date(byAdding: .day, value: 1, to: at)! }
+            // 규칙이 월~금 고정이라 지역 설정의 주말(금·토 등)이 아니라 토·일로 본다(코덱스 개발 11 2차).
+            while [1, 7].contains(Calendar(identifier: .gregorian).component(.weekday, from: at)) {
+                at = cal.date(byAdding: .day, value: 1, to: at)!
+            }
         }
         return at
     }

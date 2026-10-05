@@ -113,19 +113,27 @@ struct EventSheet: View {
             if let id = editing {
                 Section {
                     Button("일정 지우기", role: .destructive) {
-                        try? store.trash(id)
-                        dismiss()
+                        attempt { try store.trash(id) }
                     }
                 }
             }
             if let p = proposal {
                 Section {
                     Button("거절", role: .destructive) {
-                        try? store.rejectProposal(p.id)
-                        dismiss()
+                        attempt { try store.rejectProposal(p.id) }
                     }
                 }
             }
+        }
+    }
+
+    /// 저장 실패는 시트에 보이고 닫지 않는다(지우기·거절이 디스크에 못 쓰면 되돌려진다 — 코덱스 개발 11 2차).
+    private func attempt(_ f: () throws -> Void) {
+        do {
+            try f()
+            dismiss()
+        } catch {
+            self.error = error.localizedDescription
         }
     }
 
@@ -246,16 +254,14 @@ struct ErrandSheet: View {
             if let id = editing {
                 Section {
                     Button("부탁 지우기", role: .destructive) {
-                        try? store.trash(id)
-                        dismiss()
+                        attempt { try store.trash(id) }
                     }
                 }
             }
             if let p = proposal {
                 Section {
                     Button("거절", role: .destructive) {
-                        try? store.rejectProposal(p.id)
-                        dismiss()
+                        attempt { try store.rejectProposal(p.id) }
                     }
                 }
             }
@@ -278,6 +284,16 @@ struct ErrandSheet: View {
         case "skipped": "건너뜀"
         case "stopped": "멈춤"
         default: "실패"
+        }
+    }
+
+    /// 저장 실패는 시트에 보이고 닫지 않는다(지우기·거절이 디스크에 못 쓰면 되돌려진다 — 코덱스 개발 11 2차).
+    private func attempt(_ f: () throws -> Void) {
+        do {
+            try f()
+            dismiss()
+        } catch {
+            self.error = error.localizedDescription
         }
     }
 
