@@ -1,0 +1,78 @@
+[
+  {
+    "fields" : {
+      "alert_min" : null,
+      "all_day" : 0,
+      "allowed_tools" : "",
+      "approved_at" : 1790000000000,
+      "carry" : 0,
+      "created_at" : 1790000000000,
+      "deleted_at" : null,
+      "depth" : 0,
+      "end_at" : 1790199960000,
+      "end_date" : null,
+      "folder" : null,
+      "kind" : "errand",
+      "late" : "run",
+      "origin" : "user",
+      "parent_run" : null,
+      "private" : 0,
+      "resume_run" : null,
+      "rrule" : "FREQ=DAILY",
+      "series" : "6ccb869c-12a4-4911-97a2-2c43d18f91ff",
+      "start_at" : 1790199960000,
+      "start_date" : null,
+      "target" : "codex",
+      "tz" : "Asia\/Seoul",
+      "updated_at" : 1790000000000,
+      "wall_time" : null
+    },
+    "name" : "6ccb869c-12a4-4911-97a2-2c43d18f91ff",
+    "secret" : {
+      "notes" : "",
+      "prompt" : "폰에서 건 부탁",
+      "resume_session" : null,
+      "title" : "폰에서 건 부탁",
+      "workdir" : null
+    },
+    "type" : "Item"
+  },
+  {
+    "fields" : {
+      "alert_min" : 10,
+      "all_day" : 0,
+      "allowed_tools" : null,
+      "approved_at" : null,
+      "carry" : null,
+      "created_at" : 1790000000000,
+      "deleted_at" : null,
+      "depth" : null,
+      "end_at" : 1790101800000,
+      "end_date" : null,
+      "folder" : null,
+      "kind" : "event",
+      "late" : null,
+      "origin" : "user",
+      "parent_run" : null,
+      "private" : 0,
+      "resume_run" : null,
+      "rrule" : null,
+      "series" : null,
+      "start_at" : 1790100000000,
+      "start_date" : null,
+      "target" : null,
+      "tz" : "Asia\/Seoul",
+      "updated_at" : 1790000000000,
+      "wall_time" : null
+    },
+    "name" : "9daa223f-5821-4792-9f4f-2e4b41559f32",
+    "secret" : {
+      "notes" : "",
+      "prompt" : null,
+      "resume_session" : null,
+      "title" : "폰에서 만든 일정",
+      "workdir" : null
+    },
+    "type" : "Item"
+  }
+]

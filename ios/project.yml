@@ -1,0 +1,48 @@
+# Ouro iOS 앱(개발 11) — xcodegen 이 이 파일에서 Ouro.xcodeproj 를 만든다(scripts/build-ios.sh).
+# 동기화 코어는 맥 헬퍼와 같은 Swift 패키지(../sync, OuroSyncKit)를 쓴다 — 폰은 헬퍼 없이 같은 엔진을 프로세스 안에서.
+name: Ouro
+options:
+  bundleIdPrefix: com.dinggi5
+  deploymentTarget:
+    iOS: "26.0"
+packages:
+  OuroSyncKit:
+    path: ../sync
+targets:
+  Ouro:
+    type: application
+    platform: iOS
+    sources: [Ouro]
+    dependencies:
+      - package: OuroSyncKit
+        product: OuroSyncKit
+    entitlements:
+      path: Ouro/Ouro.entitlements
+      properties:
+        com.apple.developer.icloud-services: [CloudKit]
+        com.apple.developer.icloud-container-identifiers: [iCloud.com.dinggi5.ouro]
+        aps-environment: development
+    info:
+      path: Ouro/Info.plist
+      properties:
+        CFBundleDisplayName: Ouro
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIBackgroundModes: [remote-notification]
+        ITSAppUsesNonExemptEncryption: false
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.dinggi5.ouro.ios
+        PRODUCT_NAME: Ouro
+        DEVELOPMENT_TEAM: 74ZAMXKVXN
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "6.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        LOCALIZATION_PREFERS_STRING_CATALOGS: YES
+        DEVELOPMENT_LANGUAGE: ko

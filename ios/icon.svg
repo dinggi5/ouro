@@ -1,0 +1,6 @@
+<!-- iOS 앱 아이콘 원본 — 맥 아이콘(src-tauri/icons/icon.svg)과 같은 고리, iOS 는 모서리를 시스템이 깎으므로 판을 꽉 채운다.
+     수정 시: rsvg-convert -w 1024 -h 1024 ios/icon.svg | 알파 없는 PNG 로(App Store 규칙) → AppIcon.appiconset/icon-1024.png -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" fill="#F9FAFB"/>
+  <circle cx="512" cy="512" r="286" fill="none" stroke="#3182F6" stroke-width="90"/>
+</svg>

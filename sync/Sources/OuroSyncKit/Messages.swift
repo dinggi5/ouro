@@ -36,6 +36,11 @@ public struct Inbound: Codable, Sendable {
     public var delete: [RecordRef]?
     public var records: [WireRecord]?
     public var missing: [String]?
+
+    public init(op: String, id: Int? = nil) {
+        self.op = op
+        self.id = id
+    }
 }
 
 /// 헬퍼 → 앱.

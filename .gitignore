@@ -43,3 +43,6 @@ sync/OuroSync.xcodeproj/
 sync/build/
 sync/.build/
 sync/.swiftpm/
+# iOS 앱 — xcodegen 이 ios/project.yml 에서 만든다(scripts/build-ios.sh)
+ios/Ouro.xcodeproj/
+ios/build/

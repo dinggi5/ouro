@@ -1578,6 +1578,72 @@ mod tests {
         assert!(!s.any_running().unwrap(), "업데이트 설치를 막는 건 이 맥의 실행만");
     }
 
+    // ── 맥 ↔ 폰 고정 파일 — 폰(sync/Tests/OuroSyncKitTests/StoreTests.swift)과 칸 모양이 어긋나지 않게.
+    //    다시 만들기: OURO_WRITE_FIXTURE=1 cargo test fixture / OURO_WRITE_FIXTURE=1 swift test
+
+    fn fixtures() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../sync/Tests/OuroSyncKitTests/Fixtures")
+    }
+
+    fn key_sets(recs: &[Record]) -> std::collections::BTreeSet<(String, Vec<String>, Vec<String>)> {
+        recs.iter()
+            .map(|r| (r.ty.clone(), r.fields.keys().cloned().collect(), r.secret.keys().cloned().collect()))
+            .collect()
+    }
+
+    #[test]
+    fn fixture_mac_records_for_the_phone() {
+        let s = Store::open_in_memory();
+        set_on(&s, true).unwrap();
+        s.create_event(&event("치과", 1_790_100_000_000)).unwrap();
+        let er = s
+            .create_errand(&crate::errands::ErrandInput {
+                prompt: "어제 커밋 정리해 줘".into(),
+                start_at: 1_790_200_000_000,
+                ..Default::default()
+            })
+            .unwrap();
+        let run = s.begin_run(er.id, "어제 커밋 정리해 줘", 0, None).unwrap();
+        s.conn()
+            .execute(
+                "UPDATE runs SET status = 'done', finished_at = started_at + 1000, response = '정리했어요', session_id = 's1' WHERE id = ?1",
+                [run],
+            )
+            .unwrap();
+        let mut p = event("금요일 재진", 1_790_300_000_000);
+        p.notes = "".into();
+        s.add_proposal("claude-code", &p).unwrap();
+        claim_runner(&s, "맥 A", false).unwrap();
+        let (recs, _) = drain(&s);
+        let path = fixtures().join("mac-records.json");
+        if std::env::var_os("OURO_WRITE_FIXTURE").is_some() {
+            std::fs::write(&path, serde_json::to_string_pretty(&recs).unwrap()).unwrap();
+        }
+        let fixed: Vec<Record> = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(key_sets(&fixed), key_sets(&recs), "칸을 바꿨으면 고정 파일을 다시 만들고 폰(Schema.swift)도 고친다");
+    }
+
+    #[test]
+    fn fixture_phone_records_land_on_the_mac() {
+        let s = Store::open_in_memory();
+        set_on(&s, true).unwrap();
+        let recs: Vec<Record> =
+            serde_json::from_str(&std::fs::read_to_string(fixtures().join("ios-records.json")).unwrap()).unwrap();
+        apply(&s, &recs, &[]).unwrap();
+        let parked: i64 = s.conn().query_row("SELECT COUNT(*) FROM sync_inbox", [], |r| r.get(0)).unwrap();
+        assert_eq!(parked, 0, "폰이 만든 레코드가 전부 적혀야 한다");
+        let ev = s.list_events(0, i64::MAX).unwrap();
+        assert_eq!(ev.len(), 1);
+        assert_eq!((ev[0].title.as_str(), ev[0].alert_min), ("폰에서 만든 일정", Some(10)));
+        let er = s.list_errands(0, i64::MAX).unwrap();
+        assert_eq!(er.len(), 1);
+        let e = &er[0];
+        assert_eq!((e.prompt.as_str(), e.target.as_str(), e.repeat.as_str()), ("폰에서 건 부탁", "codex", "FREQ=DAILY"));
+        assert!(e.approved, "사람이 폰에서 건 부탁은 승인된 채로 온다");
+        let series: Option<i64> = s.conn().query_row("SELECT series_id FROM errands WHERE item_id = ?1", [e.id], |r| r.get(0)).unwrap();
+        assert_eq!(series, Some(e.id), "반복 묶음이 자기 자신으로 풀린다");
+    }
+
     /// 진짜 CloudKit(개발 환경) 왕복. 서명된 헬퍼가 필요하다:
     /// `OURO_SYNC_HELPER=$PWD/sync/build/Build/Products/Debug/OuroSync.app/Contents/MacOS/OuroSync cargo test -- --ignored cloudkit`
     #[test]

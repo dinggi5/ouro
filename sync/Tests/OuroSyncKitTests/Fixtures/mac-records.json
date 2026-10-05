@@ -1,0 +1,135 @@
+[
+  {
+    "type": "Item",
+    "name": "3c12ecba-d341-4fb1-9906-0c86d738c7dd",
+    "fields": {
+      "alert_min": null,
+      "all_day": 0,
+      "allowed_tools": null,
+      "approved_at": null,
+      "carry": null,
+      "created_at": 1791186386088,
+      "deleted_at": null,
+      "depth": null,
+      "end_at": 1790103600000,
+      "end_date": null,
+      "folder": null,
+      "kind": "event",
+      "late": null,
+      "origin": "user",
+      "parent_run": null,
+      "private": 0,
+      "resume_run": null,
+      "rrule": null,
+      "series": null,
+      "start_at": 1790100000000,
+      "start_date": null,
+      "target": null,
+      "tz": "Asia/Seoul",
+      "updated_at": 1791186386088,
+      "wall_time": null
+    },
+    "secret": {
+      "notes": "메모",
+      "prompt": null,
+      "resume_session": null,
+      "title": "치과",
+      "workdir": null
+    },
+    "system": null
+  },
+  {
+    "type": "Item",
+    "name": "a1f07aa6-834c-4ad2-9678-3cc46dfb8478",
+    "fields": {
+      "alert_min": null,
+      "all_day": 0,
+      "allowed_tools": "",
+      "approved_at": 1791186386089,
+      "carry": 0,
+      "created_at": 1791186386089,
+      "deleted_at": null,
+      "depth": 0,
+      "end_at": 1790200000000,
+      "end_date": null,
+      "folder": null,
+      "kind": "errand",
+      "late": "run",
+      "origin": "user",
+      "parent_run": null,
+      "private": 0,
+      "resume_run": null,
+      "rrule": null,
+      "series": null,
+      "start_at": 1790200000000,
+      "start_date": null,
+      "target": "claude",
+      "tz": "Asia/Seoul",
+      "updated_at": 1791186386089,
+      "wall_time": null
+    },
+    "secret": {
+      "notes": "",
+      "prompt": "어제 커밋 정리해 줘",
+      "resume_session": null,
+      "title": "어제 커밋 정리해 줘",
+      "workdir": null
+    },
+    "system": null
+  },
+  {
+    "type": "Run",
+    "name": "558802bd-cf7e-441d-b1c4-0c09afb25de0",
+    "fields": {
+      "device": "24fd9a3e-623c-474d-94b3-03145dfaacbe",
+      "exit_code": null,
+      "finished_at": 1791186387090,
+      "item": "a1f07aa6-834c-4ad2-9678-3cc46dfb8478",
+      "late_ms": 0,
+      "read_at": null,
+      "started_at": 1791186386090,
+      "status": "done"
+    },
+    "secret": {
+      "response": "정리했어요",
+      "resumed_session": null,
+      "sent_text": "어제 커밋 정리해 줘",
+      "session_id": "s1",
+      "stderr": null
+    },
+    "system": null
+  },
+  {
+    "type": "Proposal",
+    "name": "22b7d739-eeb8-4778-afb5-4cba086c2af5",
+    "fields": {
+      "alert_min": null,
+      "all_day": 0,
+      "created_at": 1791186386091,
+      "decided_at": null,
+      "end_at": 1790303600000,
+      "end_date": null,
+      "event": null,
+      "start_at": 1790300000000,
+      "start_date": null,
+      "status": "pending"
+    },
+    "secret": {
+      "client": "claude-code",
+      "notes": "",
+      "title": "금요일 재진"
+    },
+    "system": null
+  },
+  {
+    "type": "Config",
+    "name": "runner",
+    "fields": {
+      "at": 1791186386091,
+      "device": "24fd9a3e-623c-474d-94b3-03145dfaacbe",
+      "name": "맥 A"
+    },
+    "secret": {},
+    "system": null
+  }
+]
