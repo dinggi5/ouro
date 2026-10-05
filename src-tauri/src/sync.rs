@@ -264,17 +264,28 @@ pub(crate) fn is_runner(conn: &Connection) -> rusqlite::Result<bool> {
 ///     아직 아무도 안 맡았으면 아무도 안 돌린다(첫 받기가 끝나면 누군가 맡는다).
 ///   · 꺼져 있으면 돌린다(혼자 쓰는 맥). 단 **실행 맥이 아닌 채로 껐다면** 끈 때보다 앞선 부탁은 돌리지 않는다 —
 ///     그건 실행 맥이 돌렸을 수 있고, 그 답을 이 맥이 아직 못 받았을 수 있다(계정이 바뀌어 저절로 꺼진 때도 같다).
-pub(crate) fn may_run(conn: &Connection, start_at: i64, now: i64) -> rusqlite::Result<bool> {
+pub(crate) fn may_run(conn: &Connection, start_at: i64, now: i64) -> rusqlite::Result<MayRun> {
     if flag(conn, "on")? == 0 {
         let off_at = setting(conn, "sync_off_at")?.and_then(|v| v.parse::<i64>().ok());
-        return Ok(off_at.is_none_or(|t| start_at >= t));
+        return Ok(if off_at.is_some_and(|t| start_at < t) { MayRun::HandedOff } else { MayRun::Run });
     }
     if !is_runner(conn)? || setting(conn, "sync_runner_unconfirmed")?.is_some() {
-        return Ok(false);
+        return Ok(MayRun::Wait);
     }
     let last = setting(conn, "sync_last_fetch")?.and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
-    Ok(now - last < RUNNER_FRESH_MS)
+    Ok(if now - last < RUNNER_FRESH_MS { MayRun::Run } else { MayRun::Wait })
 }
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum MayRun {
+    Run,
+    /// 지금은 아니다(다른 맥이 맡았거나, 이 맥의 지정이 아직 서버에 없거나, 최근 받기가 없다) — 대기로 남는다.
+    Wait,
+    /// 실행 맥이 아닌 채로 동기화를 껐고, 끄기 전 부탁이다 — 건너뜀으로 닫는다.
+    HandedOff,
+}
+
+pub(crate) const HANDED_OFF_REASON: &str = "동기화를 끄기 전 부탁이라 건너뛰었어요 — 실행 맥이 돌렸을 수 있어요";
 
 /// 보낼 목록에 «저장» 한 줄을 직접 넣는다(트리거가 꺼진 `applying` 중에 «내 쪽이 이겼다» 를 적을 때, 설정 레코드).
 fn enqueue_save(conn: &Connection, key: &str, tbl: &str, rid: Option<i64>) -> rusqlite::Result<()> {
@@ -1119,11 +1130,16 @@ impl Syncer {
                 "INSERT INTO sync_meta (name, system) VALUES (?1, ?2) ON CONFLICT (name) DO UPDATE SET system = excluded.system",
                 params![name, sys],
             );
-            if name == RUNNER {
-                let _ = conn.execute("DELETE FROM settings WHERE key = 'sync_runner_unconfirmed'", []);
-            }
             if let Some((key, seq)) = lock(&self.inner.inflight).remove(name) {
                 let _ = conn.execute("DELETE FROM sync_outbox WHERE key = ?1 AND seq <= ?2", params![key, seq]);
+                // 서버가 받은 판이 **지금 값** 일 때만 실행 맥 지정을 확인한다 — 보내는 사이 또 바꿨으면(줄이 남는다)
+                // 옛 지정의 응답으로 새 지정을 확인하지 않는다(코덱스 개발 10 2차).
+                let left: bool = conn
+                    .query_row("SELECT EXISTS (SELECT 1 FROM sync_outbox WHERE key = ?1)", [&key], |r| r.get(0))
+                    .unwrap_or(true);
+                if name == RUNNER && !left {
+                    let _ = conn.execute("DELETE FROM settings WHERE key = 'sync_runner_unconfirmed'", []);
+                }
             }
         }
         for n in v.get("removed").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
@@ -1451,9 +1467,9 @@ mod tests {
     fn runner_gates_scheduled_runs_only_when_sync_is_on() {
         let s = Store::open_in_memory();
         let now = now_ms();
-        assert!(may_run(&s.conn(), now, now).unwrap(), "혼자 쓰면 언제나 돌린다");
+        assert_eq!(may_run(&s.conn(), now, now).unwrap(), MayRun::Run, "혼자 쓰면 언제나 돌린다");
         set_on(&s, true).unwrap();
-        assert!(!may_run(&s.conn(), now, now).unwrap(), "켰는데 실행 맥이 없으면 아무도 안 돌린다");
+        assert_eq!(may_run(&s.conn(), now, now).unwrap(), MayRun::Wait, "켰는데 실행 맥이 없으면 아무도 안 돌린다");
         let er = s
             .create_errand(&crate::errands::ErrandInput { prompt: "요약".into(), start_at: now_ms() - 1000, ..Default::default() })
             .unwrap();
@@ -1463,10 +1479,10 @@ mod tests {
         assert!(!claim_runner(&s, "이 맥", true).unwrap(), "이미 있으면 안 뺏는다");
         assert!(is_runner(&s.conn()).unwrap());
         put_setting(&s.conn(), "sync_last_fetch", &now_ms().to_string()).unwrap();
-        assert!(!may_run(&s.conn(), now, now_ms()).unwrap(), "서버가 받기 전엔 효력이 없다");
+        assert_eq!(may_run(&s.conn(), now, now_ms()).unwrap(), MayRun::Wait, "서버가 받기 전엔 효력이 없다");
         s.conn().execute("DELETE FROM settings WHERE key = 'sync_runner_unconfirmed'", []).unwrap();
-        assert!(may_run(&s.conn(), now, now_ms()).unwrap());
-        assert!(!may_run(&s.conn(), now, now_ms() + RUNNER_FRESH_MS).unwrap(), "받기가 오래되면 멈춘다");
+        assert_eq!(may_run(&s.conn(), now, now_ms()).unwrap(), MayRun::Run);
+        assert_eq!(may_run(&s.conn(), now, now_ms() + RUNNER_FRESH_MS).unwrap(), MayRun::Wait, "받기가 오래되면 멈춘다");
         assert!(s.claim_run(er.id, crate::errands::Claim::Scheduled, skip).unwrap().is_some());
         // 다른 맥이 실행 맥을 가져가면 이 맥은 멈춘다.
         let mut cfg = Map::new();
@@ -1477,10 +1493,26 @@ mod tests {
         apply(&s, &[rec], &[]).unwrap();
         assert!(!is_runner(&s.conn()).unwrap());
         // 실행 맥이 아닌 채로 끄면, 끈 때보다 앞선 부탁은 안 돌린다(그건 실행 맥의 몫이었다).
+        let rep = s
+            .create_errand(&crate::errands::ErrandInput {
+                prompt: "매일 요약".into(),
+                start_at: now_ms() - 60_000,
+                repeat: "FREQ=DAILY".into(),
+                ..Default::default()
+            })
+            .unwrap();
         set_on(&s, false).unwrap();
         let t = now_ms();
-        assert!(!may_run(&s.conn(), t - 1000, t).unwrap());
-        assert!(may_run(&s.conn(), t + 60_000, t).unwrap(), "끈 뒤의 부탁은 이 맥이 돌린다");
+        assert_eq!(may_run(&s.conn(), t - 1000, t).unwrap(), MayRun::HandedOff);
+        assert_eq!(may_run(&s.conn(), t + 60_000, t).unwrap(), MayRun::Run, "끈 뒤의 부탁은 이 맥이 돌린다");
+        // 끄기 전 반복 회차는 건너뜀으로 닫히고, 다음 회차는 생긴다(코덱스 개발 10 2차).
+        let (_, _, skipped) = s.claim_run(rep.id, crate::errands::Claim::Scheduled, skip).unwrap().expect("건너뜀으로 확보");
+        assert!(skipped);
+        let next: i64 = s
+            .conn()
+            .query_row("SELECT COUNT(*) FROM items WHERE kind = 'errand' AND rrule IS NOT NULL AND start_at > ?1", [t], |r| r.get(0))
+            .unwrap();
+        assert_eq!(next, 1, "다음 회차");
     }
 
     #[test]

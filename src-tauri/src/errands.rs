@@ -658,11 +658,16 @@ impl Store {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .map_err(|e| e.to_string())?;
+        let mut handed_off = false;
         let late_ms = match claim {
             Claim::Scheduled => {
                 // 동기화 중이면 예약 부탁은 «실행 맥» 한 대만 돌린다(개발 10 — 맥 둘이 같은 부탁을 두 번 보내지 않게).
-                if !crate::sync::may_run(&tx, due.start_at, now).map_err(|e| e.to_string())? {
-                    return Ok(None);
+                match crate::sync::may_run(&tx, due.start_at, now).map_err(|e| e.to_string())? {
+                    crate::sync::MayRun::Run => {}
+                    crate::sync::MayRun::Wait => return Ok(None),
+                    // 실행 맥이 아닌 채로 동기화를 끈 맥의, 끄기 전 부탁 — 실행 맥이 돌렸을 수 있다. 돌리지 않고 «건너뜀» 으로 닫는다.
+                    // 막아 두기만 하면 반복의 다음 회차(첫 확보 때 생긴다)까지 영영 안 생긴다(코덱스 개발 10 2차).
+                    crate::sync::MayRun::HandedOff => handed_off = true,
                 }
                 if any || due.start_at > now {
                     return Ok(None);
@@ -676,7 +681,13 @@ impl Store {
                 0
             }
         };
-        let reason = if matches!(claim, Claim::Scheduled) { skip(&due, late_ms) } else { None };
+        let reason = if handed_off {
+            Some(crate::sync::HANDED_OFF_REASON)
+        } else if matches!(claim, Claim::Scheduled) {
+            skip(&due, late_ms)
+        } else {
+            None
+        };
         if matches!(claim, Claim::Scheduled) && reason.is_none() {
             let ran: i64 = tx
                 .query_row("SELECT COUNT(*) FROM runs WHERE started_at >= ?1 AND status != 'skipped'", [now - DAY_MS], |r| r.get(0))
@@ -688,17 +699,20 @@ impl Store {
         // 이을 대화: «이어서 부탁» 이면 그 실행의 대화, 반복의 «지난 대화 이어서» 면 같은 묶음·같은 쪽에서 가장 최근 답의 대화.
         due.session = match (resume_session, carry, series) {
             (Some(s), _, _) => Some(s),
+            // 가장 최근 답이 다른 맥에서 돈 것이면 새 대화로 — 그 대화 기록은 이 맥에 없고, 더 오래된 이 맥의 대화를 이으면
+            // 그사이의 답을 모르는 채 잇는다(코덱스 개발 10 2차).
             (None, true, Some(sid)) => tx
                 .query_row(
-                    "SELECT r.session_id FROM runs r JOIN errands e ON e.item_id = r.item_id
+                    "SELECT r.session_id, (r.device IS NULL OR r.device = (SELECT value FROM settings WHERE key = 'device_id'))
+                     FROM runs r JOIN errands e ON e.item_id = r.item_id
                      WHERE e.series_id = ?1 AND e.target = ?2 AND r.status = 'done' AND r.session_id IS NOT NULL
-                       AND (r.device IS NULL OR r.device = (SELECT value FROM settings WHERE key = 'device_id'))
                      ORDER BY r.started_at DESC, r.id DESC LIMIT 1",
                     params![sid, due.target],
-                    |r| r.get::<_, String>(0),
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)),
                 )
                 .optional()
-                .map_err(|e| e.to_string())?,
+                .map_err(|e| e.to_string())?
+                .and_then(|(s, here)| here.then_some(s)),
             _ => None,
         };
         if reason.is_some() {
