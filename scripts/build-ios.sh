@@ -4,6 +4,8 @@
 #         ./scripts/build-ios.sh -demo      # 메모리에만 있는 예시 하루(화면 확인용)
 # 🔴 빌드 SDK 와 같은 메이저 이상의 iOS 시뮬레이터에서 켠다(전역 규칙 — Xcode 27 = iOS 27).
 set -euo pipefail
+# 날짜 파서(러스트) xcframework 부터 — 고친 게 없으면 cargo 가 바로 끝난다(개발 14).
+"$(dirname "$0")/build-parse.sh"
 cd "$(dirname "$0")/../ios"
 command -v xcodegen >/dev/null || { echo "xcodegen 이 필요해요: brew install xcodegen" >&2; exit 1; }
 SIM="${OURO_SIM:-iPhone 17}"

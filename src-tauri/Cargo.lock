@@ -2332,6 +2332,7 @@ dependencies = [
  "objc2",
  "objc2-foundation",
  "objc2-user-notifications",
+ "ouro-parse",
  "regex",
  "rusqlite",
  "serde",
@@ -2340,6 +2341,15 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-updater",
  "tempfile",
+]
+
+[[package]]
+name = "ouro-parse"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "regex",
+ "serde",
 ]
 
 [[package]]

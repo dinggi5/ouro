@@ -40,6 +40,13 @@ enum Demo {
                 "end_at": .int(cal.date(byAdding: .day, value: 4, to: at(16))!.ms),
                 "status": .string("pending"), "created_at": .int(now),
             ], system: nil),
+            // 부탁 제안 — 원문 전체와 도구가 승인 전에 보여야 한다(개발 14).
+            WireRecord(type: Kind.errandProposal, name: "demo-errand-proposal", bag: [
+                "client": .string("claude-code"),
+                "prompt": .string("내일 아침 9시에 이번 주 PR 들을 훑어 줘.\n1. 리뷰 안 된 것\n2. 충돌 난 것\n3. 오래 멈춘 것\n각각 한 줄로, 링크와 함께."),
+                "start_at": .int(cal.date(byAdding: .day, value: 1, to: at(9))!.ms), "target": .string("claude"), "late": .string("run"),
+                "allowed_tools": .string("WebSearch"), "status": .string("pending"), "created_at": .int(now),
+            ], system: nil),
         ], deleted: [])
     }
 }

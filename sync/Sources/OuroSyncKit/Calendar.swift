@@ -58,6 +58,8 @@ public struct EventView: Identifiable, Equatable, Sendable {
     public var alertMin: Int64?
     public var isPrivate: Bool
     public var origin: String
+    /// 판 — 시트가 열 때 본 값. 저장할 때 이게 달라졌으면 다른 기기가 먼저 고친 것(맥 `update_event_if`).
+    public var updatedAt: Int64?
 }
 
 public struct RunView: Identifiable, Equatable, Sendable {
@@ -95,6 +97,8 @@ public struct ErrandView: Identifiable, Equatable, Sendable {
     public var repeatRule: String
     public var approved: Bool
     public var origin: String
+    /// 판(`EventView.updatedAt` 와 같다).
+    public var updatedAt: Int64?
     /// 가장 최근 실행(없으면 아직 대기).
     public var run: RunView?
 }
@@ -114,6 +118,9 @@ public struct ErrandProposalView: Identifiable, Equatable, Sendable {
     public var target: String
     /// 놓쳤을 때 — 고치기 시트가 원래 값을 지키게(코덱스 개발 11 P2).
     public var late: String
+    /// 승인하면 이 부탁이 쓸 수 있는 도구(맥 `--allowedTools`). 빈 글 = 도구 없이 글만.
+    /// 승인 전에 사람이 봐야 한다 — 원문과 함께 «바깥으로 나갈 것» 의 일부다(코덱스 개발 13 P1).
+    public var allowedTools: String
     public var createdAt: Int64
 }
 
@@ -177,7 +184,7 @@ extension RecordStore {
         }
         return EventView(
             id: name, title: b.str("title") ?? "", notes: b.str("notes") ?? "", allDay: allDay, start: start, end: end,
-            alertMin: b.int("alert_min"), isPrivate: b.bool("private"), origin: b.str("origin") ?? "user")
+            alertMin: b.int("alert_min"), isPrivate: b.bool("private"), origin: b.str("origin") ?? "user", updatedAt: b.int("updated_at"))
     }
 
     public func event(_ id: String) -> EventView? {
@@ -201,7 +208,7 @@ extension RecordStore {
         return ErrandView(
             id: id, title: b.str("title") ?? "", prompt: b.str("prompt") ?? "", at: Date(ms: at), target: b.str("target") ?? "claude",
             late: b.str("late") ?? "run", repeatRule: b.str("rrule") ?? "", approved: b.int("approved_at") != nil,
-            origin: b.str("origin") ?? "user", run: runs(of: id).first)
+            origin: b.str("origin") ?? "user", updatedAt: b.int("updated_at"), run: runs(of: id).first)
     }
 
     /// 기다리는 제안(만료 전). 오래된 것부터.
@@ -237,7 +244,8 @@ extension RecordStore {
             else { return nil }
             return ErrandProposalView(
                 id: r.name, client: b.str("client") ?? "AI", prompt: b.str("prompt") ?? "",
-                at: Date(ms: b.int("start_at") ?? 0), target: b.str("target") ?? "claude", late: b.str("late") ?? "run", createdAt: c)
+                at: Date(ms: b.int("start_at") ?? 0), target: b.str("target") ?? "claude", late: b.str("late") ?? "run",
+                allowedTools: b.str("allowed_tools") ?? "", createdAt: c)
         }
         .sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
     }
@@ -300,11 +308,20 @@ extension RecordStore {
         return name
     }
 
-    public func updateEvent(_ id: String, _ d: EventDraft) throws {
+    /// `seen` = 시트를 열 때 본 판(`updated_at`). 그 사이 맥이 고친 게 동기화로 왔으면 덮지 않고 거절한다 —
+    /// 옛 초안이 맥에서 고친 메모·«AI 에게 숨기기» 를 되돌리지 않게(맥 `update_event_if` 와 같다, 코덱스 개발 13 P1). nil = 확인 안 함.
+    public func updateEvent(_ id: String, _ d: EventDraft, seen: Int64? = nil) throws {
         guard var b = bag(id), b.str("kind") == "event", b.int("deleted_at") == nil else { throw OuroError("이미 지워진 일정이에요") }
+        if let seen, b.int("updated_at") != seen { throw OuroError("다른 곳에서 먼저 고친 일정이에요 — 닫고 다시 열어 주세요") }
         b.merge(try eventFields(d)) { _, new in new }
-        b["updated_at"] = .int(Clock.ms())
+        b["updated_at"] = .int(Self.nextRev(b))
         try put(Kind.item, id, b)
+    }
+
+    /// 새 판 = 지금, 단 옛 판보다 반드시 크게(맥 `MAX(now, updated_at + 1)`) — 시계가 뒤로 간 기기에서 고쳐도
+    /// 판이 같아져 «고친 걸 못 알아보는» 일이 없게.
+    static func nextRev(_ b: Bag) -> Int64 {
+        max(Clock.ms(), (b.int("updated_at") ?? 0) + 1)
     }
 
     /// 휴지통으로(일정·부탁 둘 다). 맥이 7일 뒤 비우면 그 삭제가 동기화로 온다.
@@ -367,8 +384,9 @@ extension RecordStore {
     }
 
     /// 아직 안 돈 부탁만 고친다(돈 부탁의 글은 «보낸 원문» 과 어긋나면 안 된다 — 맥도 대기 중인 것만 고친다).
-    public func updateErrand(_ id: String, _ d: ErrandDraft) throws {
+    public func updateErrand(_ id: String, _ d: ErrandDraft, seen: Int64? = nil) throws {
         guard var b = bag(id), b.str("kind") == "errand", b.int("deleted_at") == nil else { throw OuroError("이미 지워진 부탁이에요") }
+        if let seen, b.int("updated_at") != seen { throw OuroError("다른 곳에서 먼저 고친 부탁이에요 — 닫고 다시 열어 주세요") }
         if !runs(of: id).isEmpty { throw OuroError("이미 돈 부탁은 고칠 수 없어요 — 새 부탁으로 걸어 주세요") }
         // 잇는 대화가 있으면 받는 쪽·반복을 못 바꾼다(맥 `update_errand` 와 같다 — 실행 맥은 받은 값을 다시 검사하지 않는다).
         if b.str("resume_session") != nil || b.str("resume_run") != nil,
@@ -381,7 +399,7 @@ extension RecordStore {
         // 사람이 시각을 옮기면 그 시각이 새 기준 — 서머타임으로 밀렸던 원래 시각은 버린다(맥과 같다).
         if b.int("start_at") != oldStart { b["wall_time"] = .null }
         if d.repeatRule.isEmpty == false, b.str("series") == nil { b["series"] = .string(id) }
-        b["updated_at"] = .int(Clock.ms())
+        b["updated_at"] = .int(Self.nextRev(b))
         try put(Kind.item, id, b)
     }
 

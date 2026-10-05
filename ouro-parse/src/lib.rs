@@ -1,4 +1,5 @@
 // 빠른 입력 규칙 파서 — 「내일 3시 치과」 → 일정 초안 (PLAN §7, 개발 3).
+// 개발 14 에 `src-tauri/src/parse.rs` 에서 크레이트로 떼었다 — 맥 앱과 iOS(`ffi`, xcframework)가 이 파일 하나를 쓴다.
 //
 // 설계 결정:
 //   · **날짜 계산은 여기서만, 결정적으로.** 같은 글 + 같은 «지금» = 언제나 같은 답. 나중에 모델을 붙여도 모델은 표현만 뽑고
@@ -17,6 +18,9 @@
 // 흐름: 글에서 조각(날짜·시각·길이·«N분 뒤»)을 뽑고 → 엮고(범위 «~», 오전/오후 물려받기) → 초안.
 // 조각을 뽑은 자리는 같은 바이트 수의 공백으로 가려 다음 규칙이 같은 글자를 두 번 먹지 않게 한다(위치가 안 어긋난다).
 
+#[cfg(feature = "ffi")]
+pub mod ffi;
+
 use std::ops::Range;
 use std::sync::LazyLock;
 
@@ -28,7 +32,7 @@ use serde::{Deserialize, Serialize};
 /// UTC 로 바꾸는 건 프론트의 `combine` 이 한다(서머타임에 없는 시각을 거기서 거른다).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct Draft {
+pub struct Draft {
     pub title: String,
     pub all_day: bool,
     /// 날짜를 못 찾았으면 넷 다 None — 사람이 시트에서 고른다.
@@ -45,7 +49,7 @@ pub(crate) struct Draft {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum Miss {
+pub enum Miss {
     /// 날짜·시각 표현을 하나도 못 찾음.
     NoDate,
     /// 찾았는데 없는 값(2월 30일, 25시).
@@ -55,7 +59,7 @@ pub(crate) enum Miss {
 }
 
 impl Miss {
-    pub(crate) fn key(self) -> &'static str {
+    pub fn key(self) -> &'static str {
         match self {
             Miss::NoDate => "no_date",
             Miss::Invalid => "invalid",
@@ -65,12 +69,12 @@ impl Miss {
 }
 
 /// 엔진 자리(PLAN §7). MVP 는 규칙 하나뿐이다 — 나중에 로컬 모델을 붙이면 표현을 뽑는 앞단으로 여기 들어온다.
-pub(crate) trait Engine {
+pub trait Engine {
     /// `now` = 로컬 지금. `base` = 사람이 보고 있는 날(오늘이 아니면) — 날짜 없는 «3시 치과» 가 그날로 간다.
     fn parse(&self, text: &str, now: NaiveDateTime, base: Option<NaiveDate>) -> Draft;
 }
 
-pub(crate) struct Rules;
+pub struct Rules;
 
 impl Engine for Rules {
     fn parse(&self, text: &str, now: NaiveDateTime, base: Option<NaiveDate>) -> Draft {
@@ -604,7 +608,7 @@ fn warn_invalid(w: &mut Vec<String>, orig: &str, span: &Range<usize>, what: &str
     w.push(format!("「{}」 — 없는 {what}예요", orig[span.clone()].trim()));
 }
 
-pub(crate) fn parse(text: &str, now: NaiveDateTime, base: Option<NaiveDate>) -> Draft {
+pub fn parse(text: &str, now: NaiveDateTime, base: Option<NaiveDate>) -> Draft {
     let mut s = Scan::new(text);
     s.run();
     let today = now.date();

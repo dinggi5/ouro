@@ -1,0 +1,30 @@
+[package]
+name = "ouro-parse"
+# 배포 버전 여섯 곳에 안 든다 — 맥 앱 안에 정적으로 들어가고 iOS 엔 xcframework 로 들어가니 따로 나가는 일이 없다.
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Ouro 빠른 입력 날짜 파서 — 맥(src-tauri)과 iOS(xcframework)가 같은 코드를 쓴다"
+
+# 파서 하나 원칙(개발 14): 맥 `parse.rs` 를 크레이트로 떼어 iOS 도 같은 러스트를 링크한다.
+# 날짜 계산을 스위프트로 옮겨 쓰면 두 벌이 반드시 어긋난다 — «내일 3시» 가 기기마다 다른 날이 되는 게 최악이다.
+[lib]
+# rlib = src-tauri 가 쓴다. staticlib = iOS(`scripts/build-parse.sh` 가 xcframework 로 묶는다).
+crate-type = ["rlib", "staticlib"]
+
+[features]
+# C 함수 두 개(`ouro_parse` · `ouro_free`) — iOS 빌드만 켠다. 맥 앱은 러스트로 바로 부른다.
+ffi = ["dep:serde_json"]
+
+[dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+regex = "1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1", optional = true }
+
+[profile.release]
+# 폰 앱에 들어가는 정적 라이브러리 — 크기를 줄인다(regex 표가 대부분이다).
+opt-level = "s"
+lto = true
+codegen-units = 1

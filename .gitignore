@@ -46,3 +46,7 @@ sync/.swiftpm/
 # iOS 앱 — xcodegen 이 ios/project.yml 에서 만든다(scripts/build-ios.sh)
 ios/Ouro.xcodeproj/
 ios/build/
+# 날짜 파서 xcframework — scripts/build-parse.sh 가 만든다
+ouro-parse/swift/OuroParseFFI.xcframework/
+ouro-parse/swift/.build/
+ouro-parse/swift/.swiftpm/

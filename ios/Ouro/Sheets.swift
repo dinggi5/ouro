@@ -45,17 +45,25 @@ struct EventSheet: View {
     let store: RecordStore
     let editing: String?
     let proposal: ProposalView?
+    /// 열 때 본 판 — 그 사이 맥에서 고친 게 오면 저장을 거절한다(코덱스 개발 13 P1).
+    private let seen: Int64?
+    private let onSaved: () -> Void
     @State private var d: EventDraft
     @State private var error: String?
     @Environment(\.dismiss) private var dismiss
 
-    init(store: RecordStore, editing: String?, day: Date, proposal: ProposalView?) {
+    /// `prefill` = 빠른 추가가 넘긴 새 일정 초안(개발 14). `onSaved` = 저장(새로 넣기·고치기·승인)이 디스크에 적혔을 때.
+    init(store: RecordStore, editing: String?, day: Date, proposal: ProposalView?, prefill: EventDraft? = nil, onSaved: @escaping () -> Void = {}) {
         self.store = store
         self.editing = editing
         self.proposal = proposal
+        self.onSaved = onSaved
+        seen = editing.flatMap { store.event($0)?.updatedAt }
         var d = EventDraft()
         if let p = proposal {
             d = p.event
+        } else if let prefill {
+            d = prefill
         } else if let id = editing, let e = store.event(id) {
             d.title = e.title
             d.notes = e.notes
@@ -65,16 +73,22 @@ struct EventSheet: View {
             d.alertMin = e.alertMin
             d.isPrivate = e.isPrivate
         } else {
-            // 오늘이면 다음 정각, 다른 날이면 오전 9시(맥과 같다).
-            let cal = Calendar.current
-            let now = Date()
-            let start = cal.isDateInToday(day)
-                ? cal.nextDate(after: now, matching: DateComponents(minute: 0), matchingPolicy: .nextTime)!
-                : cal.date(bySettingHour: 9, minute: 0, second: 0, of: day)!
-            d.start = start
-            d.end = start.addingTimeInterval(3600)
+            d = Self.blank(day: day)
         }
         _d = State(initialValue: d)
+    }
+
+    /// 새 일정의 기본 — 오늘이면 다음 정각, 다른 날이면 오전 9시, 한 시간(맥과 같다).
+    static func blank(day: Date) -> EventDraft {
+        var d = EventDraft()
+        let cal = Calendar.current
+        let now = Date()
+        let start = cal.isDateInToday(day)
+            ? cal.nextDate(after: now, matching: DateComponents(minute: 0), matchingPolicy: .nextTime)!
+            : cal.date(bySettingHour: 9, minute: 0, second: 0, of: day)!
+        d.start = start
+        d.end = start.addingTimeInterval(3600)
+        return d
     }
 
     var body: some View {
@@ -142,10 +156,11 @@ struct EventSheet: View {
             if let p = proposal {
                 try store.approveProposal(p.id, edited: d)
             } else if let id = editing {
-                try store.updateEvent(id, d)
+                try store.updateEvent(id, d, seen: seen)
             } else {
                 try store.createEvent(d)
             }
+            onSaved()
             dismiss()
         } catch {
             self.error = error.localizedDescription
@@ -157,6 +172,7 @@ struct ErrandSheet: View {
     let store: RecordStore
     let editing: String?
     let proposal: ErrandProposalView?
+    private let seen: Int64?
     @State private var d: ErrandDraft
     @State private var error: String?
     @State private var openRun: RunView?
@@ -166,6 +182,7 @@ struct ErrandSheet: View {
         self.store = store
         self.editing = editing
         self.proposal = proposal
+        seen = editing.flatMap { store.errand($0)?.updatedAt }
         var d = ErrandDraft()
         let cal = Calendar.current
         if let p = proposal {
@@ -221,7 +238,8 @@ struct ErrandSheet: View {
             }
             Section {
                 if locked {
-                    Text(d.prompt).font(.bodySm).foregroundStyle(Color.inkSecondary).textSelection(.enabled)
+                    // 보낸 원문 그대로(맥이 실행 때 적은 `sent_text`) — 초안 문장이 아니라(코덱스 개발 13 P2).
+                    Text(runs.first.map { $0.sentText.isEmpty ? d.prompt : $0.sentText } ?? d.prompt).font(.bodySm).foregroundStyle(Color.inkSecondary).textSelection(.enabled)
                 } else {
                     TextField("Claude 에게 부탁할 말", text: $d.prompt, axis: .vertical).lineLimit(4...12)
                 }
@@ -250,6 +268,10 @@ struct ErrandSheet: View {
                     Text("건너뛰기").tag("skip")
                 }
                 .disabled(locked)
+                if let p = proposal {
+                    // 폰에선 못 바꾼다 — 승인하면 제안의 권한 그대로 실린다. 그래서 승인 전에 보여야 한다.
+                    LabeledContent("도구", value: Fmt.tools(p.allowedTools))
+                }
             }
             if let id = editing {
                 Section {
@@ -302,7 +324,7 @@ struct ErrandSheet: View {
             if let p = proposal {
                 try store.approveErrandProposal(p.id, edited: d)
             } else if let id = editing {
-                try store.updateErrand(id, d)
+                try store.updateErrand(id, d, seen: seen)
             } else {
                 try store.createErrand(d)
             }
@@ -369,8 +391,21 @@ struct ErrandProposalCard: View {
 
     var body: some View {
         CardFrame(label: "\(Fmt.client(p.client)) 가 부탁을 제안했어요", more: more) {
-            Text(p.prompt).font(.bodySm).foregroundStyle(Color.ink).lineLimit(4)
             Text("\(Fmt.monthDay(p.at)) \(Fmt.hm(p.at)) · \(Fmt.target(p.target)) 에게").font(.num).foregroundStyle(Color.inkSecondary)
+            // 🔴 승인하면 이 글이 그대로 바깥으로 나간다 — 자르지 않는다(불변 규칙 «보낼 원문 표시», 코덱스 개발 13 P1).
+            // 길면 칸 안에서 굴린다(맥 카드와 같다).
+            ScrollView {
+                Text(p.prompt).font(.bodySm).foregroundStyle(Color.ink).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(maxHeight: 160)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color.sunken))
+            .padding(.top, 4)
+            Text("승인하면 때가 될 때 위 글이 그대로 \(Fmt.target(p.target)) 로 나가요 · 도구 \(Fmt.tools(p.allowedTools)) · 놓치면 \(p.late == "skip" ? "건너뜀" : "늦게라도 실행")")
+                .font(.micro).foregroundStyle(Color.inkMuted)
         } actions: {
             Button("승인") { run { try store.approveErrandProposal(p.id) } }.buttonStyle(SealButton())
             Button("고치기", action: onEdit).buttonStyle(QuietButton())

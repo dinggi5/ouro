@@ -1,0 +1,4 @@
+module OuroParseFFI {
+    header "ouro_parse.h"
+    export *
+}

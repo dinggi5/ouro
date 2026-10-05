@@ -5,6 +5,8 @@ import SwiftUI
 
 enum Sheet: Identifiable {
     case newEvent(Date), editEvent(String), newErrand(Date), errand(String), settings
+    /// 빠른 추가가 사람에게 넘긴 초안(개발 14).
+    case quick(EventDraft)
     case proposal(ProposalView), errandProposal(ErrandProposalView)
     var id: String {
         switch self {
@@ -13,6 +15,7 @@ enum Sheet: Identifiable {
         case .newErrand: "newErrand"
         case .errand(let i): "r" + i
         case .settings: "settings"
+        case .quick: "quick"
         case .proposal(let p): "p" + p.id
         case .errandProposal(let p): "ep" + p.id
         }
@@ -20,11 +23,14 @@ enum Sheet: Identifiable {
 }
 
 struct TodayView: View {
-    let store: RecordStore
-    let refresh: () async -> Void
+    @Bindable var model: AppModel
     @State private var day = Calendar.current.startOfDay(for: Date())
     @State private var sheet: Sheet?
     @State private var toast: String?
+    @State private var quick = ""
+    @FocusState private var quickFocused: Bool
+
+    private var store: RecordStore { model.store }
 
     private var cal: Calendar { .current }
 
@@ -53,15 +59,32 @@ struct TodayView: View {
         }
         .scrollIndicators(.hidden)
         .background(Color.canvas)
-        .refreshable { await refresh() }
-        .safeAreaInset(edge: .bottom) {
-            if !ProcessInfo.processInfo.arguments.contains("-demo") { SyncLine(store: store) { sheet = .settings } }
-        }
+        .refreshable { await model.fetch() }
+        .scrollDismissesKeyboard(.immediately)
+        // 아래 입력칸 위에 뜨게 — safeAreaInset 보다 먼저 붙여야 줄어든 안전 영역 안에 놓인다.
         .overlay(alignment: .bottom) { ToastView(text: toast) }
+        .safeAreaInset(edge: .bottom) {
+            VStack(spacing: 0) {
+                QuickField(text: $quick, focused: $quickFocused, day: day, commit: quickCommit)
+                    .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, model.demo ? 12 : 4)
+                if !model.demo { SyncLine(store: store) { sheet = .settings } }
+            }
+            .background(Color.canvas.opacity(0.96))
+        }
+        .onChange(of: model.request, initial: true) { _, r in take(r) }
+        .task {
+            // 데모 화면 확인용: `-demo -quick «내일 3시 치과»` 면 입력칸에 그 글을 넣고 연다(시뮬레이터 자동 입력이 한글을 못 친다).
+            let args = ProcessInfo.processInfo.arguments
+            if model.demo, let i = args.firstIndex(of: "-quick"), i + 1 < args.count {
+                quick = args[i + 1]
+                take(.quickAdd)
+            }
+        }
         .sheet(item: $sheet) { s in
             Group {
                 switch s {
                 case .newEvent(let d): EventSheet(store: store, editing: nil, day: d, proposal: nil)
+                case .quick(let d): EventSheet(store: store, editing: nil, day: day, proposal: nil, prefill: d, onSaved: { quick = "" })
                 case .editEvent(let id): EventSheet(store: store, editing: id, day: day, proposal: nil)
                 case .proposal(let p): EventSheet(store: store, editing: nil, day: day, proposal: p)
                 case .newErrand(let d): ErrandSheet(store: store, editing: nil, day: d, proposal: nil)
@@ -96,6 +119,41 @@ struct TodayView: View {
             .accessibilityLabel("추가")
         }
         .padding(.top, 8)
+    }
+
+    /// 컨트롤 버튼·Siri 가 보낸 부탁을 받는다. 앱이 막 켜졌으면 화면이 뜬 뒤에 온다(`initial`).
+    private func take(_ r: AppRequest?) {
+        guard let r else { return }
+        model.request = nil
+        switch r {
+        case .quickAdd:
+            sheet = nil
+            // 시트가 내려가는 중이면 포커스가 안 붙는다 — 한 박자 뒤에.
+            Task {
+                try? await Task.sleep(for: .milliseconds(350))
+                quickFocused = true
+            }
+        case .sheet(let d):
+            sheet = .quick(d)
+        }
+    }
+
+    /// 빠른 입력 확정. 바로 넣으면 그날로 옮겨 보여 주고, 아니면 시트에서 사람이 저장할 때 입력칸을 비운다(맥과 같다).
+    private func quickCommit(_ d: EventDraft, _ direct: Bool) {
+        guard direct else {
+            quickFocused = false
+            sheet = .quick(d)
+            return
+        }
+        do {
+            try store.createEvent(d)
+            quick = ""
+            quickFocused = false
+            withAnimation(.easeOut(duration: 0.2)) { day = Calendar.current.startOfDay(for: d.start) }
+            show("넣었어요 · \(QuickAdd.whenText(d))")
+        } catch {
+            show(error.localizedDescription)
+        }
     }
 
     private func show(_ t: String) {
@@ -241,7 +299,7 @@ struct ToastView: View {
             Text(text).font(.label).foregroundStyle(Color.surface)
                 .padding(.horizontal, 16).frame(height: 44)
                 .background(Capsule().fill(Color.ink))
-                .padding(.bottom, 48)
+                .padding(.bottom, 16)
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
         }
     }

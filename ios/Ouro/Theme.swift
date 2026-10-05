@@ -96,6 +96,14 @@ enum Fmt {
         return hm(d)
     }
     static func target(_ t: String) -> String { t == "codex" ? "Codex" : "Claude Code" }
+    /// 부탁이 쓸 수 있는 도구(맥 `TOOL_OPTIONS` 와 같은 말). 모르는 값은 그대로 보인다 — 감추면 승인할 사람이 못 본다.
+    static func tools(_ t: String) -> String {
+        switch t {
+        case "": "대화만"
+        case "WebSearch": "웹 검색"
+        default: t
+        }
+    }
     static func client(_ c: String) -> String {
         let l = c.lowercased()
         if l.contains("claude") { return "Claude" }

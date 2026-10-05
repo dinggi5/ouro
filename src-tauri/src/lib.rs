@@ -5,7 +5,7 @@
 //   store   ~/.ouro/ouro.db — 일정·부탁·실행 (개발 2)
 //   alerts  일정 알림 + 매일 백업 + 아침 브리핑을 도는 시계 스레드 (개발 2·7)
 //   brief   오늘 일정·겹침·빈 시간을 규칙으로 센다 (개발 7)
-//   parse   빠른 입력 규칙 파서 «내일 3시 치과» → 초안 (개발 3)
+//   parse   빠른 입력 규칙 파서 «내일 3시 치과» → 초안 (개발 3) — 크레이트 `ouro-parse`(개발 14, iOS 와 공유)
 //   errands 부탁 저장·실행 기록 (개발 5)
 //   dispatch 때가 된 부탁을 `claude -p` 로 보내고 답을 적는 일꾼 (개발 5)
 //   mcp     MCP 사이드카가 묻는 소켓 — 읽기·제안만, 승인은 팝오버에서 (개발 4)
@@ -21,7 +21,6 @@ mod dispatch;
 mod errands;
 mod mcp;
 mod notify;
-mod parse;
 mod store;
 mod sync;
 mod tray;
@@ -31,6 +30,7 @@ mod wide;
 use std::sync::Arc;
 
 use errands::{Errand, ErrandInput, ErrandProposal};
+use ouro_parse as parse;
 use parse::{Draft, Engine, Miss};
 use serde::Serialize;
 use store::{Event, EventInput, Proposal, Store};

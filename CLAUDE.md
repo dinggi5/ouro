@@ -15,6 +15,9 @@
 - iOS 앱(개발 11): `ios/`(SwiftUI, xcodegen, 번들 id `com.dinggi5.ouro.ios`). 헬퍼 없이 같은 `SyncCore` 를 프로세스 안에서(`LocalBridge`), 저장소는 `RecordStore`(레코드 그대로 JSON 한 파일).
   폰은 부탁을 돌리지 않는다. 레코드 칸·합치기·검사의 정본은 맥(`sync.rs`·`store.rs`·`errands.rs`) — 바꾸면 `sync/Sources/OuroSyncKit/Schema.swift`·`Calendar.swift` 도.
   둘이 어긋나면 고정 파일 검사(`cargo test fixture` · `swift test`)가 깨진다. 빌드·켜기 `./scripts/build-ios.sh [-demo]`.
+- 날짜 파서(개발 14): 크레이트 `ouro-parse/` 하나를 맥(`src-tauri` 가 path 의존)과 iOS(`ffi` 기능 → `./scripts/build-parse.sh` 가 xcframework,
+  스위프트 패키지 `ouro-parse/swift` = `OuroParse`)가 같이 쓴다. 파서를 스위프트로 옮겨 쓰지 않는다(파서 하나 원칙). xcframework 는 커밋하지 않는다 — `build-ios.sh` 가 먼저 만든다.
+  iOS 빠른 추가 = 첫 화면 아래 입력칸 · 위젯 확장 `ios/Widgets`(컨트롤 버튼) · App Intents(`QuickAdd.swift`, Siri·단축어). 인텐트는 앱 프로세스에서 `AppModel.shared` 를 쓴다.
 - `src-tauri` 를 빌드·테스트하기 전에 `./scripts/build-sidecars.sh` (externalBin 이라 사이드카 파일이 없으면 `cargo test` 도 실패한다).
 - 불변 규칙: 바깥에서 들어온 글(.ics·AI 답)은 부탁 문장이 될 수 없다 / AI 가 만든 부탁은 사람 승인 전엔 안 돈다 / 바깥으로 나간 원문은 저장한다.
 - 날짜 계산은 LLM 이 아니라 결정적 파서가 한다.

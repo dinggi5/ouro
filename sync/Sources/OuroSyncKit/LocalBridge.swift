@@ -35,6 +35,19 @@ public final class LocalBridge: Outlet, @unchecked Sendable {
         await core?.receive(m)
     }
 
+    /// 보낼 것을 엔진 상태에 다시 넣고 **지금** 보낸다(엔진이 스스로 고르는 때를 기다리지 않는다).
+    /// Siri 처럼 앱이 잠깐만 깨어 있을 때 쓴다(개발 14). 저장할 때 `onPending` 이 띄운 알림보다 먼저 와도 되게 직접 다시 알린다.
+    @MainActor
+    public func push() async {
+        let (s, d) = store.pendingRefs()
+        guard !s.isEmpty || !d.isEmpty else { return }
+        var m = Inbound(op: "pending")
+        m.save = s
+        m.delete = d
+        await core?.receive(m)
+        await core?.receive(Inbound(op: "send"))
+    }
+
     public func fetch() async {
         await core?.receive(Inbound(op: "fetch"))
     }

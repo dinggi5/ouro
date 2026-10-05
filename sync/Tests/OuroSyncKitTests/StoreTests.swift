@@ -260,3 +260,56 @@ let fixtures = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appen
     #expect(s.records.isEmpty)
     #expect(s.pendingCount == 0)
 }
+
+/// 시트를 연 사이 맥에서 고친 게 오면 옛 초안이 덮지 않는다(코덱스 개발 13 P1 — 맥 `update_event_if` 와 같다).
+@Test @MainActor func staleSheetDoesNotOverwrite() throws {
+    let (phone, mac) = twoStores()
+    var d = EventDraft()
+    d.title = "치과"
+    let id = try phone.createEvent(d)
+    ship(phone, to: mac)
+    let seen = try #require(phone.event(id)?.updatedAt)
+    // 폰 시트가 열려 있는 사이 맥이 메모·숨기기를 고쳤다.
+    Clock.now = { Date().addingTimeInterval(5) }
+    defer { Clock.now = { Date() } }
+    var m = d
+    m.notes = "맥에서 적은 메모"
+    m.isPrivate = true
+    try mac.updateEvent(id, m)
+    ship(mac, to: phone)
+    var stale = d
+    stale.title = "치과 예약"
+    #expect(throws: OuroError("다른 곳에서 먼저 고친 일정이에요 — 닫고 다시 열어 주세요")) { try phone.updateEvent(id, stale, seen: seen) }
+    #expect(phone.event(id)?.notes == "맥에서 적은 메모")
+    #expect(phone.event(id)?.isPrivate == true)
+    // 새로 열면(새 판) 고칠 수 있고, 판은 반드시 올라간다.
+    let fresh = try #require(phone.event(id)?.updatedAt)
+    m.title = "치과 예약"
+    try phone.updateEvent(id, m, seen: fresh)
+    #expect(try #require(phone.event(id)?.updatedAt) > fresh)
+
+    var e = ErrandDraft()
+    e.prompt = "요약해 줘"
+    e.at = Date().addingTimeInterval(3600)
+    let r = try phone.createErrand(e)
+    let rs = try #require(phone.errand(r)?.updatedAt)
+    try phone.updateErrand(r, e, seen: rs)
+    #expect(throws: OuroError("다른 곳에서 먼저 고친 부탁이에요 — 닫고 다시 열어 주세요")) { try phone.updateErrand(r, e, seen: rs) }
+}
+
+/// 부탁 제안은 도구 권한까지 보여 주고, 승인하면 그 권한이 그대로 부탁에 실린다.
+@Test @MainActor func errandProposalCarriesItsTools() throws {
+    let s = RecordStore(url: nil)
+    let now = Clock.ms()
+    let p = WireRecord(
+        type: Kind.errandProposal, name: "ep1",
+        bag: [
+            "client": .string("claude-code"), "prompt": .string("PR 리뷰해 줘"), "start_at": .int(now + 3_600_000),
+            "target": .string("claude"), "late": .string("run"), "allowed_tools": .string("Read,Grep"),
+            "status": .string("pending"), "created_at": .int(now),
+        ], system: "s")
+    try s.apply([p], deleted: [])
+    #expect(s.pendingErrandProposals().first?.allowedTools == "Read,Grep")
+    let name = try s.approveErrandProposal("ep1")
+    #expect(s.bag(name)?.str("allowed_tools") == "Read,Grep")
+}
