@@ -1,10 +1,11 @@
 // AI 의 일정 제안 카드 — 목록 위에 뜬다. 한 번 눌러 넣고(«넣기»), 고쳐서 넣고, 거절한다.
 //
-// 색: 카드 머리의 «◯ Claude Code 가 제안» 만 액센트다(DESIGN «액센트 = AI 가 관여한 것»). «넣기» 는 다른 주 버튼처럼 먹색.
+// 색: 카드 머리의 «엔소 Claude Code 가 제안» 이 액센트다(DESIGN «액센트 = AI 가 관여한 것»). «넣기» 는 주홍 도장(`SEAL`) — 사람의 승인이 찍히는 자리다(개발 13).
 // 여러 개면 먼저 온 것 하나만 보이고 «1 / 3» — 카드가 쌓여 목록을 덮지 않게.
 
 import type { Proposal } from "../lib/proposals";
 import { clientLabel, proposalWhen } from "../lib/proposals";
+import { Enso, SEAL } from "./Enso";
 
 export function ProposalCard({
   proposal: p,
@@ -26,13 +27,11 @@ export function ProposalCard({
   return (
     <section
       aria-label="AI 일정 제안"
-      className="toast-in mx-5 mt-4 flex shrink-0 flex-col gap-1 rounded-lg bg-surface px-4 pt-3 pb-4 shadow-[0_2px_10px_rgba(0,27,55,0.10),0_3px_20px_rgba(2,32,71,0.05)] ring-1 ring-hairline"
+      className="toast-in mx-5 mt-4 flex shrink-0 flex-col gap-1 rounded-lg bg-surface px-4 pt-3 pb-4 ring-1 ring-hairline"
     >
       <div className="flex items-center justify-between gap-3 text-caption">
         <span className="flex min-w-0 items-center gap-1.5 text-accent">
-          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" className="shrink-0">
-            <circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
-          </svg>
+          <Enso form="open" />
           <span className="truncate">{clientLabel(p.client)} 제안</span>
         </span>
         {total > 1 && <span className="num shrink-0 text-ink-muted">1 / {total}</span>}
@@ -48,7 +47,7 @@ export function ProposalCard({
           type="button"
           disabled={busy}
           onClick={onApprove}
-          className="h-10 flex-1 rounded-md bg-ink text-label font-semibold text-canvas transition-opacity duration-100 active:opacity-80 disabled:opacity-40"
+          className={SEAL}
         >
           넣기
         </button>

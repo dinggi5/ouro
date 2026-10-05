@@ -16,6 +16,8 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crate::errands::TrayMark;
+
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
@@ -23,7 +25,7 @@ use tauri::{
     AppHandle, Emitter, Manager, Runtime, WebviewWindow, Window,
 };
 
-/// 트레이 아이콘 id — rect() 조회·아이콘 교체(개발 5 의 ◯ ◔ ●) 때 다시 찾으려고 고정한다.
+/// 트레이 아이콘 id — rect() 조회·엔소 세 모양 교체(`refresh_mark`) 때 다시 찾으려고 고정한다.
 const TRAY_ID: &str = "ouro";
 
 /// 팝오버와 메뉴바 사이 여백(논리 px). **0 = 메뉴바 경계에 딱 붙임**(DESIGN «간격 0»).
@@ -42,7 +44,10 @@ const WINDOW_H: f64 = 640.0;
 /// 포커스를 잃으므로, 이 유예가 없으면 열린 팝오버를 클릭해도 닫혔다 곧바로 다시 열린다.
 const REOPEN_GUARD: Duration = Duration::from_millis(250);
 
+// 메뉴바 엔소 세 모양(개발 13, `scripts/enso.mjs` 가 만든다). 템플릿 이미지라 메뉴바 밝기는 시스템이 맞춘다.
 const ICON_IDLE: &[u8] = include_bytes!("../icons/tray-idle.png");
+const ICON_RUNNING: &[u8] = include_bytes!("../icons/tray-running.png");
+const ICON_DONE: &[u8] = include_bytes!("../icons/tray-done.png");
 
 /// 팝오버 런타임 상태.
 #[derive(Default)]
@@ -410,6 +415,28 @@ pub(crate) fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         })
         .build(app)?;
     Ok(())
+}
+
+/// 부탁 상태가 바뀌었을 수 있다 — DB 를 한 번 보고 메뉴바 엔소를 맞춘다. 같은 모양이면 건드리지 않는다
+/// (부탁·동기화·사람 손 모든 길에서 불리니 잦다). 어느 스레드에서 불러도 된다(set_icon 이 메인 스레드로 넘긴다).
+pub(crate) fn refresh_mark<R: Runtime>(app: &AppHandle<R>) {
+    static LAST: Mutex<Option<TrayMark>> = Mutex::new(None);
+    let Some(Ok(core)) = app.try_state::<crate::CoreState>().map(|s| s.inner().as_ref()) else { return };
+    let Ok(mark) = core.store.tray_mark() else { return };
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if *last == Some(mark) {
+        return;
+    }
+    let bytes = match mark {
+        TrayMark::Idle => ICON_IDLE,
+        TrayMark::Running => ICON_RUNNING,
+        TrayMark::Answered => ICON_DONE,
+    };
+    let (Some(tray), Ok(img)) = (app.tray_by_id(TRAY_ID), Image::from_bytes(bytes)) else { return };
+    // 아이콘을 바꾸면 템플릿 표시가 풀리는 플랫폼이 있어 매번 다시 건다.
+    if tray.set_icon(Some(img)).is_ok() && tray.set_icon_as_template(true).is_ok() {
+        *last = Some(mark);
+    }
 }
 
 #[cfg(test)]

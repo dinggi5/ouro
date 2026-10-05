@@ -34,7 +34,7 @@ struct SheetFrame<Content: View>: View {
                 }
                 .safeAreaInset(edge: .bottom) {
                     if let error {
-                        Text(error).font(.caption13).foregroundStyle(Color.danger).padding(.bottom, 8)
+                        Text(error).font(.caption13).foregroundStyle(Color.ink).padding(.bottom, 8)
                     }
                 }
         }
@@ -349,7 +349,7 @@ struct ProposalCard: View {
             Text(p.event.allDay ? "\(Fmt.monthDay(p.event.start)) \(Fmt.weekday(p.event.start)) · 종일" : "\(Fmt.monthDay(p.event.start)) \(Fmt.weekday(p.event.start)) · \(Fmt.hm(p.event.start))")
                 .font(.num).foregroundStyle(Color.inkSecondary)
         } actions: {
-            Button("승인") { run { try store.approveProposal(p.id) } }.buttonStyle(PrimaryButton())
+            Button("승인") { run { try store.approveProposal(p.id) } }.buttonStyle(SealButton())
             Button("고치기", action: onEdit).buttonStyle(QuietButton())
             Button("거절") { run { try store.rejectProposal(p.id) } }.buttonStyle(QuietButton())
         }
@@ -372,7 +372,7 @@ struct ErrandProposalCard: View {
             Text(p.prompt).font(.bodySm).foregroundStyle(Color.ink).lineLimit(4)
             Text("\(Fmt.monthDay(p.at)) \(Fmt.hm(p.at)) · \(Fmt.target(p.target)) 에게").font(.num).foregroundStyle(Color.inkSecondary)
         } actions: {
-            Button("승인") { run { try store.approveErrandProposal(p.id) } }.buttonStyle(PrimaryButton())
+            Button("승인") { run { try store.approveErrandProposal(p.id) } }.buttonStyle(SealButton())
             Button("고치기", action: onEdit).buttonStyle(QuietButton())
             Button("거절") { run { try store.rejectProposal(p.id) } }.buttonStyle(QuietButton())
         }
@@ -391,7 +391,10 @@ struct CardFrame<Body: View, Actions: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(label).font(.caption13).foregroundStyle(Color.ai)
+                HStack(spacing: 6) {
+                    ErrandMark(status: nil)
+                    Text(label).font(.caption13).foregroundStyle(Color.ai)
+                }
                 Spacer()
                 if more > 0 { Text("+\(more)").font(.caption13).foregroundStyle(Color.inkMuted) }
             }
@@ -400,15 +403,18 @@ struct CardFrame<Body: View, Actions: View>: View {
         }
         .padding(20)
         .background(RoundedRectangle(cornerRadius: 16).fill(Color.surface))
+        // 그림자 대신 머리카락 선 하나(개발 13) — 키나리 위에 떠 보이지 않고 놓여 보이게.
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.hairline, lineWidth: 1))
     }
 }
 
-struct PrimaryButton: ButtonStyle {
+/// AI 제안을 받는 «승인» — 인장처럼 주홍 글자에 주홍 테(개발 13). 다른 주 버튼(저장)은 먹색 그대로.
+struct SealButton: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(.label.weight(.semibold)).foregroundStyle(Color.surface)
+        configuration.label.font(.label.weight(.semibold)).foregroundStyle(Color.ai)
             .frame(maxWidth: .infinity).frame(height: 44)
-            .background(RoundedRectangle(cornerRadius: 12).fill(Color.ink))
-            .opacity(configuration.isPressed ? 0.8 : 1)
+            .background(RoundedRectangle(cornerRadius: 12).fill(configuration.isPressed ? Color.sunken : Color.clear))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.ai, lineWidth: 1.5))
     }
 }
 
@@ -431,7 +437,7 @@ struct SettingsSheet: View {
                     LabeledContent("iCloud", value: accountText)
                     if let t = store.sync.lastSync { LabeledContent("마지막으로 맞춤", value: Fmt.ago(t)) }
                     if store.pendingCount > 0 { LabeledContent("보낼 것", value: "\(store.pendingCount)개") }
-                    if let e = store.sync.error { Text(e).foregroundStyle(Color.danger) }
+                    if let e = store.sync.error { Text(e).foregroundStyle(Color.ink) }
                 } footer: {
                     Text("일정·부탁·답이 내 iCloud 로 내 기기끼리 오가요. 제목과 글은 암호화 칸에 담겨요 — «고급 데이터 보호» 를 켜 두면 애플도 못 읽어요.")
                         .font(.micro)

@@ -155,6 +155,14 @@ pub(crate) struct Due {
     pub folder: i64,
 }
 
+/// 메뉴바 엔소의 세 모양(`tray.rs`) — 열림 · 앞만 짙음 · 닫혀 채워짐.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TrayMark {
+    Idle,
+    Running,
+    Answered,
+}
+
 /// 실행 권리를 어떤 길로 얻나. 수동은 «요청한 뒤 다른 실행이 시작하지 않았을 때만».
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Claim {
@@ -890,6 +898,24 @@ impl Store {
             .map_err(|e| e.to_string())
     }
 
+    /// 메뉴바 아이콘 상태(개발 13): 안 읽은 답이 있으면 «답», 아니면 도는 부탁이 있으면 «도는 중», 아니면 «대기».
+    /// 답이 먼저인 이유: 사람이 할 일(읽기)이 있는 쪽. 지운 부탁은 안 센다. 도는 중은 어느 기기의 실행이든 — 화면의 점과 같은 기준.
+    pub(crate) fn tray_mark(&self) -> Result<TrayMark, String> {
+        self.conn()
+            .query_row(
+                "SELECT
+                   EXISTS (SELECT 1 FROM items i JOIN runs r ON r.id =
+                             (SELECT id FROM runs WHERE item_id = i.id ORDER BY started_at DESC, id DESC LIMIT 1)
+                           WHERE i.kind = 'errand' AND i.deleted_at IS NULL AND r.status = 'done' AND r.read_at IS NULL),
+                   EXISTS (SELECT 1 FROM runs r JOIN items i ON i.id = r.item_id
+                           WHERE r.status = 'running' AND i.deleted_at IS NULL)",
+                [],
+                |r| Ok((r.get::<_, bool>(0)?, r.get::<_, bool>(1)?)),
+            )
+            .map(|(answered, running)| if answered { TrayMark::Answered } else if running { TrayMark::Running } else { TrayMark::Idle })
+            .map_err(|e| e.to_string())
+    }
+
     /// 이 맥에서 지금 도는 부탁이 하나라도 있나 — 업데이트 설치(앱 재시작) 전에 본다(update.rs). 다른 맥의 실행은 상관없다.
     pub(crate) fn any_running(&self) -> Result<bool, String> {
         self.conn()
@@ -1208,6 +1234,35 @@ mod tests {
         // 한 번 돌면(건너뜀 포함) 다시 안 걸린다.
         s.begin_run(e.id, "a", 0, Some("건너뜀")).unwrap();
         assert!(s.due_errands(5_000).unwrap().is_empty());
+    }
+
+    #[test]
+    fn tray_mark_follows_running_and_unread_answers() {
+        let s = Store::open_in_memory();
+        assert_eq!(s.tray_mark().unwrap(), TrayMark::Idle);
+        let e = s.create_errand(&input("질문", 1_000)).unwrap();
+        assert_eq!(s.tray_mark().unwrap(), TrayMark::Idle, "기다리는 부탁은 열린 원 그대로");
+        let run = s.begin_run(e.id, "질문", 0, None).unwrap();
+        assert_eq!(s.tray_mark().unwrap(), TrayMark::Running);
+        let done = Outcome { status: "done", exit_code: Some(0), response: Some("답".into()), stderr: None, session_id: None };
+        s.finish_run(run, &done).unwrap();
+        assert_eq!(s.tray_mark().unwrap(), TrayMark::Answered);
+        // 안 읽은 답이 있으면 다른 부탁이 돌아도 «답» 이 먼저다.
+        let other = s.create_errand(&input("또", 1_000)).unwrap();
+        let run2 = s.begin_run(other.id, "또", 0, None).unwrap();
+        assert_eq!(s.tray_mark().unwrap(), TrayMark::Answered);
+        s.mark_run_read(run).unwrap();
+        assert_eq!(s.tray_mark().unwrap(), TrayMark::Running);
+        // 실패는 답이 아니다. 안 읽은 답도 부탁을 지우면 안 센다.
+        let fail = Outcome { status: "failed", exit_code: Some(1), response: None, stderr: Some("x".into()), session_id: None };
+        s.finish_run(run2, &fail).unwrap();
+        assert_eq!(s.tray_mark().unwrap(), TrayMark::Idle);
+        let third = s.create_errand(&input("셋", 1_000)).unwrap();
+        let run3 = s.begin_run(third.id, "셋", 0, None).unwrap();
+        s.finish_run(run3, &done).unwrap();
+        assert_eq!(s.tray_mark().unwrap(), TrayMark::Answered);
+        s.delete_errand(third.id).unwrap();
+        assert_eq!(s.tray_mark().unwrap(), TrayMark::Idle);
     }
 
     #[test]

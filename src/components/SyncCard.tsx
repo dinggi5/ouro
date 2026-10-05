@@ -4,7 +4,7 @@
 import { agoText, type SyncState } from "../lib/sync";
 
 const CARD =
-  "toast-in mx-5 mt-4 flex shrink-0 flex-col gap-1 rounded-lg bg-surface px-4 pt-3 pb-4 shadow-[0_2px_10px_rgba(0,27,55,0.10),0_3px_20px_rgba(2,32,71,0.05)] ring-1 ring-hairline";
+  "toast-in mx-5 mt-4 flex shrink-0 flex-col gap-1 rounded-lg bg-surface px-4 pt-3 pb-4 ring-1 ring-hairline";
 
 function stateLine(s: NonNullable<SyncState["status"]>, now: number): string {
   if (!s.on) return "꺼져 있어요 — 일정은 이 맥에만 있어요";
@@ -29,7 +29,7 @@ export function SyncCard({ sync, hidden, now }: { sync: SyncState; hidden: boole
       <p className="text-caption text-ink-secondary">
         일정·부탁·답이 내 iCloud 로 내 기기끼리 오가요. 제목과 글은 암호화 칸에 담겨요 — iCloud «고급 데이터 보호» 를 켜 두면 애플도 못 읽어요.
       </p>
-      <p role="status" className={`num mt-1 text-caption ${bad ? "text-danger" : "text-ink-muted"}`}>
+      <p role="status" className={`num mt-1 text-caption ${bad ? "text-ink" : "text-ink-muted"}`}>
         {stateLine(s, now)}
       </p>
       {s.on && (
@@ -51,7 +51,7 @@ export function SyncCard({ sync, hidden, now }: { sync: SyncState; hidden: boole
         </div>
       )}
       {sync.message && (
-        <p role="alert" className="text-micro text-danger">
+        <p role="alert" className="text-micro text-ink">
           {sync.message}
         </p>
       )}
@@ -74,7 +74,7 @@ export function SyncLine({ sync }: { sync: SyncState }) {
   const s = sync.status;
   if (!s?.on || !s.error || sync.open) return null;
   return (
-    <button type="button" onClick={sync.show} className="flex shrink-0 items-center px-5 pt-2 text-left text-micro text-danger">
+    <button type="button" onClick={sync.show} className="flex shrink-0 items-center px-5 pt-2 text-left text-micro text-ink">
       {s.error} · 보기
     </button>
   );

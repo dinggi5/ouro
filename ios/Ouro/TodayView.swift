@@ -217,7 +217,7 @@ struct SyncLine: View {
         Button(action: open) {
             HStack(spacing: 6) {
                 if let e = s.error {
-                    Text(e).foregroundStyle(Color.danger)
+                    Text(e).foregroundStyle(Color.ink)
                 } else if store.pendingCount > 0 {
                     Text("보내는 중 · \(store.pendingCount)개")
                 } else if let t = s.lastSync {

@@ -197,7 +197,7 @@ export function ErrandSheet({
   );
 
   const errorLine = error && (
-    <p role="alert" className="text-caption text-danger">
+    <p role="alert" className="text-caption text-ink">
       {error}
     </p>
   );
@@ -222,7 +222,7 @@ export function ErrandSheet({
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 pb-4">
           <div>
             <p className="text-body font-semibold">{errand.title}</p>
-            <p className={`num mt-1 text-caption ${st === "failed" ? "text-danger" : st === "done" ? "text-accent" : "text-ink-muted"}`}>
+            <p className={`num mt-1 text-caption ${st === "failed" ? "text-ink" : st === "done" ? "text-accent" : "text-ink-muted"}`}>
               {stateLabel(errand)}
               {meta.length > 0 && ` · ${meta.join(" · ")}`}
             </p>
@@ -277,7 +277,7 @@ export function ErrandSheet({
               </button>
             ) : (
               <>
-                <button type="button" onClick={onDelete} className={`${ghost} text-danger`}>
+                <button type="button" onClick={onDelete} className={`${ghost} text-ink`}>
                   삭제
                 </button>
                 {run.canResume && (
@@ -403,7 +403,7 @@ export function ErrandSheet({
         <div className="flex gap-2">
           {errand && (
             <>
-              <button type="button" onClick={onDelete} className={`${ghost} text-danger`}>
+              <button type="button" onClick={onDelete} className={`${ghost} text-ink`}>
                 삭제
               </button>
               <button

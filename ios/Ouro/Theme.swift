@@ -1,5 +1,5 @@
-// 색·글자 — 전역 DESIGN.md 토큰(토스 그레이) + Ouro 규칙: **색을 갖는 건 부탁·답뿐**(DESIGN.md «액센트 = AI 가 관여한 것»).
-// 저장 버튼·고른 날짜·스위치도 먹색(ink)이다.
+// 색·글자 — 맥(src/App.css)과 같은 토큰: 生成り(키나리) 바탕 · 먹 글자 · 朱(주홍) 하나(개발 13, DESIGN.md «정체성»).
+// Ouro 규칙: **색을 갖는 건 부탁·답·제안뿐**(«액센트 = AI 가 관여한 것»). 저장 버튼·고른 날짜·스위치도 먹색(ink)이고, 빨강은 없다(오류도 먹색 문장).
 
 import SwiftUI
 import UIKit
@@ -8,17 +8,15 @@ extension Color {
     static func dyn(_ light: UInt32, _ dark: UInt32) -> Color {
         Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(hex: dark) : UIColor(hex: light) })
     }
-    static let canvas = dyn(0xF9FAFB, 0x151517)
-    static let surface = dyn(0xFFFFFF, 0x1C1C1F)
-    static let sunken = dyn(0xF2F4F6, 0x242428)
-    static let hairline = dyn(0xE5E8EB, 0x33333A)
-    static let ink = dyn(0x191F28, 0xF2F2F4)
-    static let inkSecondary = dyn(0x4E5968, 0x9A9AA1)
-    static let inkMuted = dyn(0x8B95A1, 0x6E6E73)
-    /// AI 가 관여한 것(부탁·답·제안)에만.
-    static let ai = dyn(0x3182F6, 0x64A8FF)
-    static let aiTint = dyn(0xE8F3FF, 0x1E2A3A)
-    static let danger = dyn(0xF04452, 0xF04452)
+    static let canvas = dyn(0xF7F4EC, 0x1B1A17)
+    static let surface = dyn(0xFCFAF5, 0x22211D)
+    static let sunken = dyn(0xEFEBE1, 0x2A2824)
+    static let hairline = dyn(0xE3DED2, 0x38352F)
+    static let ink = dyn(0x22201C, 0xECE7DC)
+    static let inkSecondary = dyn(0x57524A, 0xA39D92)
+    static let inkMuted = dyn(0x8C867B, 0x757066)
+    /// 朱 — AI 가 관여한 것(부탁·답·제안)에만.
+    static let ai = dyn(0xC9472B, 0xE98466)
 }
 
 extension UIColor {
@@ -40,24 +38,28 @@ extension Font {
     static let num = Font.system(size: 15).monospacedDigit()
 }
 
-/// 부탁 상태 표시 — ◯ 대기 · ◔ 실행 중 · ● 답 도착(DESIGN.md).
+/// 부탁 상태 표시 — 엔소(붓 한 번 원, Enso.swift): 열림 = 대기 · 앞만 짙음 = 도는 중 · 닫혀 채워짐 = 답(DESIGN.md).
+/// 실패·멈춤·건너뜀은 색 없는 열린 원(끝나지 못한 고리).
 struct ErrandMark: View {
     let status: String?
+    var size: CGFloat = 12
     var body: some View {
         ZStack {
             switch status {
             case nil:
-                Circle().strokeBorder(Color.ai, lineWidth: 1.5)
+                EnsoShape().fill(Color.ai)
             case "running":
-                Circle().strokeBorder(Color.ai, lineWidth: 1.5)
-                Circle().trim(from: 0, to: 0.25).fill(Color.ai).rotationEffect(.degrees(-90)).padding(1)
+                EnsoShape().fill(Color.ai.opacity(0.35))
+                EnsoShape().fill(Color.ai).mask(EnsoShape(points: EnsoGeometry.runClip))
             case "done":
-                Circle().fill(Color.ai)
+                Circle().fill(Color.ai).padding(size * (12 - EnsoGeometry.r) / 24)
+            case "failed":
+                EnsoShape().fill(Color.inkSecondary)
             default:
-                Circle().strokeBorder(Color.inkMuted, lineWidth: 1.5)
+                EnsoShape().fill(Color.inkMuted)
             }
         }
-        .frame(width: 12, height: 12)
+        .frame(width: size, height: size)
         .accessibilityHidden(true)
     }
 }

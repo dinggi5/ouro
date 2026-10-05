@@ -73,7 +73,7 @@ export function QuickBar({
             // 누르는 순간 입력칸의 포커스를 뺏지 않는다 — 시트가 닫히면 다시 이어 칠 수 있게.
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => void commit(true)}
-            className="toast-in absolute inset-x-5 bottom-full flex flex-col gap-1 rounded-md bg-surface px-4 py-3 text-left shadow-[0_2px_10px_rgba(0,27,55,0.10),0_3px_20px_rgba(2,32,71,0.05)] ring-1 ring-hairline"
+            className="toast-in absolute inset-x-5 bottom-full flex flex-col gap-1 rounded-md bg-surface px-4 py-3 text-left ring-1 ring-hairline"
           >
             {errand && (
               <span className="text-micro font-semibold text-accent">

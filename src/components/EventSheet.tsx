@@ -314,7 +314,7 @@ export function EventSheet({
 
       <footer className="flex shrink-0 flex-col gap-2 px-5 pb-5">
         {error && (
-          <p role="alert" className="text-caption text-danger">
+          <p role="alert" className="text-caption text-ink">
             {error}
           </p>
         )}
@@ -323,7 +323,7 @@ export function EventSheet({
             <button
               type="button"
               onClick={onDelete}
-              className="h-13 rounded-md bg-surface-sunken px-5 text-body-sm font-semibold text-danger transition-colors duration-100 active:bg-hairline"
+              className="h-13 rounded-md bg-surface-sunken px-5 text-body-sm font-semibold text-ink transition-colors duration-100 active:bg-hairline"
             >
               삭제
             </button>

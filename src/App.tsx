@@ -36,6 +36,7 @@ import { api, errorText, type EventInput, type OuroEvent } from "./lib/events";
 import { canDirect, quickApi, quickToDraft, type QuickDraft } from "./lib/quick";
 import { useUpdate } from "./lib/update";
 import { useSync } from "./lib/sync";
+import { Enso } from "./components/Enso";
 import {
   addDays,
   addMonths,
@@ -229,7 +230,7 @@ function App() {
     return () => window.removeEventListener("focus", onFocus);
   }, [reload]);
 
-  // 부탁이 시작하거나 끝나면 러스트가 «errands-changed» 를 보낸다 — 점(◯ ◔ ●)이 스스로 바뀐다.
+  // 부탁이 시작하거나 끝나면 러스트가 «errands-changed» 를 보낸다 — 엔소 점(열림·도는 중·닫힘)이 스스로 바뀐다.
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let alive = true;
@@ -792,7 +793,8 @@ function App() {
           </div>
         </div>
 
-        <div role="tablist" className={`mt-5 grid rounded-md bg-surface-sunken p-1 ${WIDE ? "grid-cols-2" : "grid-cols-3"}`}>
+        {/* 탭은 글자 + 고른 쪽 아래 먹 점 하나(개발 13) — 칸을 나눈 회색 통(세그먼트)은 «표준 앱» 의 얼굴이라 뺐다. */}
+        <div role="tablist" className="mt-4 flex gap-5">
           {TABS.map((v) => (
             <button
               key={v.id}
@@ -800,11 +802,12 @@ function App() {
               role="tab"
               aria-selected={view === v.id}
               onClick={() => setView(v.id)}
-              className={`h-8 rounded-sm text-label transition-colors duration-100 ${
-                view === v.id ? "bg-surface font-semibold text-ink dark:bg-hairline" : "text-ink-muted hover:text-ink-secondary"
+              className={`flex h-9 flex-col items-center justify-center gap-1 text-label transition-colors duration-100 ${
+                view === v.id ? "font-semibold text-ink" : "text-ink-muted hover:text-ink-secondary"
               }`}
             >
               {v.label}
+              <span className={`size-1 rounded-full ${view === v.id ? "bg-ink" : "bg-transparent"}`} />
             </button>
           ))}
         </div>
@@ -894,9 +897,7 @@ function App() {
 
       {aiClients.length > 0 && (
         <p className="flex shrink-0 items-center gap-1.5 px-5 pt-2 text-micro text-accent" title="MCP 로 이 캘린더에 붙어 있어요">
-          <svg width="10" height="10" viewBox="0 0 12 12" aria-hidden="true" className="shrink-0">
-            <circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
-          </svg>
+          <Enso form="open" size={10} />
           <span className="truncate">{aiClients.map(clientLabel).join(" · ")} 연결됨</span>
         </p>
       )}
@@ -905,7 +906,7 @@ function App() {
       <SyncLine sync={sync} />
 
       {backupError && (
-        <p role="alert" className="shrink-0 truncate px-5 pt-2 text-micro text-danger" title={backupError}>
+        <p role="alert" className="shrink-0 truncate px-5 pt-2 text-micro text-ink" title={backupError}>
           {backupError}
         </p>
       )}
@@ -933,7 +934,7 @@ function App() {
           <div className="absolute inset-0" onClick={() => setAddMenu(false)} />
           <div
             role="menu"
-            className="toast-in absolute top-16 right-5 flex w-36 flex-col rounded-md bg-surface p-1 shadow-[0_2px_10px_rgba(0,27,55,0.10),0_3px_20px_rgba(2,32,71,0.05)] ring-1 ring-hairline"
+            className="toast-in absolute top-16 right-5 flex w-36 flex-col rounded-md bg-surface p-1 ring-1 ring-hairline"
           >
             <button type="button" role="menuitem" autoFocus onClick={() => addNew("event")} className="h-10 rounded-sm px-3 text-left text-body-sm text-ink hover:bg-surface-sunken">
               일정
@@ -950,11 +951,11 @@ function App() {
         <div
           key={toast.key}
           role="status"
-          className="toast-in absolute inset-x-0 bottom-20 mx-auto flex w-fit items-center gap-4 rounded-pill bg-[rgba(25,31,40,0.92)] px-5 py-3 text-body-sm text-white"
+          className="toast-in absolute inset-x-0 bottom-20 mx-auto flex w-fit items-center gap-4 rounded-pill bg-ink px-5 py-3 text-body-sm text-canvas"
         >
           <span>{toast.text}</span>
           {toast.undo && (
-            <button type="button" onClick={toast.undo} className="font-semibold text-white/70 hover:text-white">
+            <button type="button" onClick={toast.undo} className="font-semibold text-canvas/70 hover:text-canvas">
               되돌리기
             </button>
           )}

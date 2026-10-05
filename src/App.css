@@ -33,9 +33,7 @@
   --color-accent: var(--accent);
   --color-black: #000000;
   --color-white: #ffffff;
-  --color-on-accent: #ffffff;
-  --color-danger: #f04452;
-  --color-success: #03b26c;
+  /* 빨강·초록 없음(개발 13) — 삭제·오류도 먹색 문장이다. 색은 朱 하나뿐이고 그건 AI 몫. */
 
   --font-sans: "Pretendard Variable", "Pretendard", "Apple SD Gothic Neo", system-ui, sans-serif;
   --font-numeric: "SF Pro Rounded", "Pretendard Variable", system-ui, sans-serif;
@@ -70,15 +68,16 @@
 }
 
 :root {
-  /* 라이트 — 토스 grey 실측 */
-  --canvas: #f9fafb;
-  --surface: #ffffff;
-  --surface-sunken: #f2f4f6;
-  --hairline: #e5e8eb;
-  --ink: #191f28;
-  --ink-secondary: #4e5968;
-  --ink-muted: #8b95a1;
-  --accent: #3182f6;
+  /* 라이트 — 生成り(키나리, 표백 안 한 무명) 바탕 · 먹 글자 · 朱(주홍, 인주) 하나(개발 13, Ouro DESIGN «정체성»).
+     회색은 전부 노란 기운을 아주 조금 머금는다 — 푸른 회색(토스)이면 주홍이 떠 보인다. */
+  --canvas: #f7f4ec;
+  --surface: #fcfaf5;
+  --surface-sunken: #efebe1;
+  --hairline: #e3ded2;
+  --ink: #22201c;
+  --ink-secondary: #57524a;
+  --ink-muted: #8c867b;
+  --accent: #c9472b;
 
   font-family: var(--font-sans);
   font-synthesis: none;
@@ -92,14 +91,15 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --canvas: #151517;
-    --surface: #1c1c1f;
-    --surface-sunken: #242428;
-    --hairline: #33333a;
-    --ink: #f2f2f4;
-    --ink-secondary: #9a9aa1;
-    --ink-muted: #6e6e73;
-    --accent: #64a8ff; /* accent-on-dark */
+    /* 따뜻한 먹 — 순흑이 아니라 먹물을 갈아 둔 벼루 빛. 글자는 키나리 쪽으로. */
+    --canvas: #1b1a17;
+    --surface: #22211d;
+    --surface-sunken: #2a2824;
+    --hairline: #38352f;
+    --ink: #ece7dc;
+    --ink-secondary: #a39d92;
+    --ink-muted: #757066;
+    --accent: #e98466; /* 朱 on dark */
   }
 }
 
@@ -135,11 +135,22 @@ body {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
+/* 엔소 의식(DESIGN «모션», 800ms 한 곳): 틈을 메우는 호가 그어지고 → 안이 채워진다. */
+@keyframes enso-stroke {
+  from { stroke-dashoffset: 1; }
+  to { stroke-dashoffset: 0; }
+}
+@keyframes enso-fill {
+  0%, 62% { opacity: 0; }
+  100% { opacity: 1; }
+}
+.enso-stroke { stroke-dasharray: 1; animation: enso-stroke 500ms var(--ease-out) both; }
+.enso-fill { animation: enso-fill 800ms var(--ease-standard) both; }
 .sheet-in { animation: sheet-in 320ms var(--ease-out); }
 .scrim-in { animation: fade-in 200ms var(--ease-out); }
 .toast-in { animation: toast-in 200ms var(--ease-out); }
 @media (prefers-reduced-motion: reduce) {
-  .sheet-in, .scrim-in, .toast-in { animation: none; }
+  .sheet-in, .scrim-in, .toast-in, .enso-stroke, .enso-fill { animation: none; }
 }
 
 /* 스위치 — 체크박스를 그대로 쓰고 모양만 바꾼다(키보드·스크린리더가 공짜로 따라온다).
@@ -163,7 +174,7 @@ body {
   width: 20px;
   height: 20px;
   border-radius: 999px;
-  background: #ffffff;
+  background: var(--surface);
   transition: transform 200ms var(--ease-standard);
 }
 .switch:checked { background: var(--ink); }

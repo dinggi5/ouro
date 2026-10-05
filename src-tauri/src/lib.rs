@@ -56,6 +56,8 @@ pub(crate) type CoreState = Result<Core, String>;
 /// 웹뷰엔 emit 권한을 주지 않으므로(capabilities) 알림은 러스트가 낸다.
 fn touched(app: &tauri::AppHandle) {
     let _ = app.emit("data-changed", ());
+    // 답을 읽었거나 부탁을 지웠으면 메뉴바 엔소도 바뀐다.
+    tray::refresh_mark(app);
 }
 
 fn core<'a>(state: &'a State<'_, CoreState>) -> Result<&'a Core, String> {
@@ -90,6 +92,7 @@ fn open_core(app: &tauri::AppHandle) -> CoreState {
         dir.clone(),
         Arc::new(move || {
             let _ = handle.emit("errands-changed", ());
+            tray::refresh_mark(&handle);
         }),
     );
     let handle = app.clone();
@@ -103,6 +106,7 @@ fn open_core(app: &tauri::AppHandle) -> CoreState {
                 // 다른 기기에서 온 일정·부탁·제안 — 목록을 다시 읽고, 새로 온 부탁이 있을 수 있으니 디스패처를 깨운다.
                 let _ = handle.emit("errands-changed", ());
                 let _ = handle.emit("proposals-changed", ());
+                tray::refresh_mark(&handle);
                 if let Some(Ok(core)) = handle.try_state::<CoreState>().map(|s| s.inner().as_ref()) {
                     core.dispatcher.poke();
                 }
@@ -443,6 +447,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             tray::build(app.handle())?;
+            tray::refresh_mark(app.handle());
             // 알림을 누르면 팝오버를 연다(notify.rs). 권한은 여기서 한 번 묻는다.
             let h = app.handle().clone();
             notify::setup(move || {
