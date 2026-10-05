@@ -145,6 +145,8 @@ function App() {
   const [backupError, setBackupError] = useState<string | null>(null);
   const [sheet, setSheet] = useState<Sheet | null>(null);
   const [errands, setErrands] = useState<Errand[]>([]);
+  /** `errands` 를 읽은 창 [from, to) — 커서는 바로 바뀌고 목록은 늦게 오니, «창 밖» 판정은 지금 커서가 아니라 이것과 한다(크게 보기). */
+  const [errandsRange, setErrandsRange] = useState<[number, number]>([0, 0]);
   const [errandSheet, setErrandSheet] = useState<ErrandSheetState | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
   const sheetKey = useRef(0);
@@ -211,6 +213,7 @@ function App() {
       if (seq !== eventsSeq.current) return;
       setEvents(list);
       setErrands(errs);
+      setErrandsRange([from.getTime(), to.getTime()]);
       setBrief(b);
       setFatal(null);
     } catch (e) {
@@ -350,7 +353,9 @@ function App() {
     if (foundErrand) lastErrand.current = foundErrand;
   }, [foundErrand]);
   const cachedErrand = !foundErrand && lastErrand.current?.id === errandSheet?.id ? lastErrand.current : null;
-  const outOfRange = !!cachedErrand && (cachedErrand.startAt < from.getTime() || cachedErrand.startAt >= to.getTime());
+  // 목록을 읽은 창과 비교한다 — 지금 커서와 비교하면 원래 달로 돌아오는 순간(목록은 아직 옛 달) «창 안인데 없음» 으로 닫힌다(사전 점검 개발 12).
+  const outOfRange =
+    !!cachedErrand && (cachedErrand.startAt < errandsRange[0] || cachedErrand.startAt >= errandsRange[1]);
   const openSheetErrand = foundErrand ?? (WIDE && outOfRange ? cachedErrand : null);
   // 열어 둔 부탁이 지워졌거나 창 밖으로 나갔으면 시트를 닫는다(크게 보기는 위의 «창 밖» 을 빼고).
   useEffect(() => {
