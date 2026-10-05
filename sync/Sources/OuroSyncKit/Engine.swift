@@ -21,6 +21,8 @@ public actor SyncCore: CKSyncEngineDelegate {
     var engine: CKSyncEngine?
     var nextID = 1
     var waiting: [Int: CheckedContinuation<Inbound, Never>] = [:]
+    /// 이번 받기에서 존 받기가 실패했나 — 실패한 받기를 «맞췄다» 로 알리지 않는다(앱이 그걸 보고 실행 맥을 맡는다).
+    var fetchFailed: String?
 
     public init(containerID: String, stateDir: URL, out: any Outlet) {
         container = CKContainer(identifier: containerID)
@@ -210,6 +212,13 @@ public actor SyncCore: CKSyncEngineDelegate {
             out.send(m)
 
         case .didFetchChanges:
+            if let why = fetchFailed {
+                fetchFailed = nil
+                var m = Outbound(ev: "error")
+                m.message = "받기: \(why)"
+                out.send(m)
+                return
+            }
             var m = Outbound(ev: "synced")
             m.reason = "fetch"
             out.send(m)
@@ -227,10 +236,15 @@ public actor SyncCore: CKSyncEngineDelegate {
         case .willFetchRecordZoneChanges(let w):
             if ProcessInfo.processInfo.environment["OURO_SYNC_TRACE"] != nil { log("존 받기 시작 \(w.zoneID.zoneName)") }
         case .didFetchRecordZoneChanges(let d):
+            if let err = d.error {
+                fetchFailed = err.localizedDescription
+            }
             if ProcessInfo.processInfo.environment["OURO_SYNC_TRACE"] != nil {
                 log("존 받기 끝 \(d.zoneID.zoneName) 오류=\(String(describing: d.error))")
             }
-        case .willFetchChanges, .willSendChanges:
+        case .willFetchChanges:
+            fetchFailed = nil
+        case .willSendChanges:
             break
 
         @unknown default:

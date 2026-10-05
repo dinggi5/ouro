@@ -52,3 +52,10 @@ curl -sL https://github.com/dinggi5/ouro/releases/latest/download/latest.json | 
 - 유니버설(인텔) 빌드 배포 — 캐스크가 `_aarch64.dmg`·`arch: :arm64` 로 고정돼 있어 `--publish --universal` 은 막혀 있다.
 - 재현 가능 빌드 — 같은 커밋도 서명 타임스탬프·공증 티켓 때문에 바이트가 다르다.
 - `.mcpb` 서명 — mcpb 2.1.2 의 서명본을 Claude 가 거부하는 버그(modelcontextprotocol/mcpb#278). 릴리스 본문에 sha256 만 싣는다.
+- **동기화 헬퍼(OuroSync.app)를 배포본에 넣기** (개발 10 에서 미룸). 지금 배포본엔 헬퍼가 없어 «iCloud 동기화…» 메뉴가 안 보인다. 넣으려면:
+  ① `com.dinggi5.ouro.sync` 의 **Developer ID 프로비저닝 프로파일**(iCloud·CloudKit 켬, 컨테이너 `iCloud.com.dinggi5.ouro`) —
+  Xcode 자동 서명(`xcodebuild archive` + `-exportArchive` method `developer-id`, `-allowProvisioningUpdates`)이 만들 수 있다.
+  ② 엔타이틀먼트에 `com.apple.developer.icloud-container-environment = Production`, `aps-environment = production`.
+  ③ **CloudKit 운영 환경에 스키마 배포** — CloudKit Console(icloud.developer.apple.com) «Deploy Schema Changes». 개발 환경 스키마는
+  레코드를 처음 저장할 때 저절로 생겼다(Item·Run·Config…). 사람이 콘솔에서 누른다.
+  ④ `Ouro.app/Contents/Helpers/OuroSync.app` 로 복사(Tauri `bundle.macOS.files`), 헬퍼를 먼저 자기 엔타이틀먼트로 서명한 뒤 본체 서명 — `release.sh` 의 서명 검사에 헬퍼 추가.

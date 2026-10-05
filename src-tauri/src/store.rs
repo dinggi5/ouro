@@ -374,7 +374,9 @@ macro_rules! sync_track {
             ", NULL, 'save', (SELECT v FROM sync_flags WHERE k = 'seq'))\n",
             "    ON CONFLICT (key) DO UPDATE SET seq = excluded.seq;\n",
             "END;\n",
-            "CREATE TRIGGER sync_", $t, "_del AFTER DELETE ON ", $t, " WHEN ", sync_when!(), " AND OLD.uid IS NOT NULL BEGIN\n",
+            // 삭제는 꺼져 있어도 적는다 — 한 번이라도 올린 줄(sync_meta)이면. 끈 사이 휴지통 비우기가 지운 것을 다시 켤 때 서버에서도 지우려고(코덱스 개발 10).
+            "CREATE TRIGGER sync_", $t, "_del AFTER DELETE ON ", $t, " WHEN (SELECT v FROM sync_flags WHERE k = 'applying') = 0 AND OLD.uid IS NOT NULL\n",
+            "  AND ((SELECT v FROM sync_flags WHERE k = 'on') = 1 OR EXISTS (SELECT 1 FROM sync_meta WHERE name = OLD.uid)) BEGIN\n",
             "  UPDATE sync_flags SET v = v + 1 WHERE k = 'seq';\n",
             "  DELETE FROM sync_outbox WHERE key = '", $t, ":' || OLD.", $id, ";\n",
             "  INSERT INTO sync_outbox (key, tbl, rid, uid, op, seq) VALUES ('del:' || OLD.uid, '", $t, "', NULL, OLD.uid, 'delete', ",
@@ -752,7 +754,7 @@ impl Store {
         let n = self
             .conn()
             .execute(
-                "UPDATE items SET deleted_at = ?2 WHERE id = ?1 AND kind = 'event' AND deleted_at IS NULL",
+                "UPDATE items SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1 AND kind = 'event' AND deleted_at IS NULL",
                 params![id, now_ms()],
             )
             .map_err(|e| e.to_string())?;
@@ -766,8 +768,8 @@ impl Store {
         let n = self
             .conn()
             .execute(
-                "UPDATE items SET deleted_at = NULL WHERE id = ?1 AND kind = 'event' AND deleted_at IS NOT NULL",
-                [id],
+                "UPDATE items SET deleted_at = NULL, updated_at = ?2 WHERE id = ?1 AND kind = 'event' AND deleted_at IS NOT NULL",
+                params![id, now_ms()],
             )
             .map_err(|e| e.to_string())?;
         if n == 0 {

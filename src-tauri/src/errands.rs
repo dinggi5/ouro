@@ -209,22 +209,26 @@ fn validate(input: &ErrandInput) -> Result<(String, String), String> {
     Ok((prompt.to_string(), title_of(prompt)))
 }
 
-/// (실행 상태, 대화 번호, 받은 쪽, 부탁 id, 작업 폴더)
-type ParentRun = (String, Option<String>, String, i64, Option<i64>);
+/// (실행 상태, 대화 번호, 받은 쪽, 부탁 id, 작업 폴더, 이 맥이 돌렸나)
+type ParentRun = (String, Option<String>, String, i64, Option<i64>, bool);
 
 /// «이어서 부탁» 이 잇는 실행을 확인한다 — 답이 왔고 대화 번호가 있어야 하고, 같은 쪽(Claude·Codex)이어야 한다.
 /// 돌려주는 값 = (그 대화가 사는 작업 폴더(부모 부탁의 폴더), 대화 번호).
 fn resume_folder(conn: &rusqlite::Connection, run_id: i64, target: &str) -> Result<(i64, String), String> {
     let row: Option<ParentRun> = conn
         .query_row(
-            "SELECT r.status, r.session_id, e.target, e.item_id, e.folder_id
+            "SELECT r.status, r.session_id, e.target, e.item_id, e.folder_id, (r.device IS NULL OR r.device = (SELECT value FROM settings WHERE key = 'device_id'))
              FROM runs r JOIN errands e ON e.item_id = r.item_id WHERE r.id = ?1",
             [run_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
         )
         .optional()
         .map_err(|e| e.to_string())?;
-    let (status, session, parent_target, item, folder) = row.ok_or("이을 답이 없어요")?;
+    let (status, session, parent_target, item, folder, here) = row.ok_or("이을 답이 없어요")?;
+    // 대화 기록은 그 CLI 를 돌린 맥에만 있다(동기화는 답만 옮긴다, 개발 10).
+    if !here {
+        return Err("다른 맥에서 돈 답이라 이 맥에선 이어서 부탁할 수 없어요".into());
+    }
     let Some(session) = session.filter(|_| status == "done") else {
         return Err("답이 온 부탁만 이어서 부탁할 수 있어요".into());
     };
@@ -307,10 +311,10 @@ const LIST_SQL: &str = "
            r.resumed_session, r.session_id,
            COALESCE(i.rrule, ''), e.series_id, e.carry, e.resume_run_id,
            (SELECT pi.title FROM runs pr JOIN items pi ON pi.id = pr.item_id WHERE pr.id = e.resume_run_id),
-           e.resume_session IS NOT NULL
+           e.resume_session IS NOT NULL, (r.device IS NULL OR r.device = (SELECT value FROM settings WHERE key = 'device_id'))
     FROM items i
     JOIN errands e ON e.item_id = i.id
-    LEFT JOIN runs r ON r.id = (SELECT MAX(id) FROM runs WHERE item_id = i.id)
+    LEFT JOIN runs r ON r.id = (SELECT id FROM runs WHERE item_id = i.id ORDER BY started_at DESC, id DESC LIMIT 1)
     WHERE i.kind = 'errand' AND i.deleted_at IS NULL";
 
 fn row_to_errand(r: &rusqlite::Row) -> rusqlite::Result<Errand> {
@@ -320,7 +324,7 @@ fn row_to_errand(r: &rusqlite::Row) -> rusqlite::Result<Errand> {
             let status: String = r.get(9)?;
             Some(RunView {
                 id,
-                can_resume: status == "done" && r.get::<_, Option<String>>(18)?.is_some(),
+                can_resume: status == "done" && r.get::<_, Option<String>>(18)?.is_some() && r.get::<_, bool>(25)?,
                 status,
                 started_at: r.get(10)?,
                 finished_at: r.get(11)?,
@@ -543,7 +547,7 @@ impl Store {
         }
         let n = conn
             .execute(
-                "UPDATE items SET deleted_at = ?2 WHERE id = ?1 AND kind = 'errand' AND deleted_at IS NULL",
+                "UPDATE items SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1 AND kind = 'errand' AND deleted_at IS NULL",
                 params![id, now_ms()],
             )
             .map_err(|e| e.to_string())?;
@@ -557,8 +561,8 @@ impl Store {
         let n = self
             .conn()
             .execute(
-                "UPDATE items SET deleted_at = NULL WHERE id = ?1 AND kind = 'errand' AND deleted_at IS NOT NULL",
-                [id],
+                "UPDATE items SET deleted_at = NULL, updated_at = ?2 WHERE id = ?1 AND kind = 'errand' AND deleted_at IS NOT NULL",
+                params![id, now_ms()],
             )
             .map_err(|e| e.to_string())?;
         if n == 0 {
@@ -657,7 +661,7 @@ impl Store {
         let late_ms = match claim {
             Claim::Scheduled => {
                 // 동기화 중이면 예약 부탁은 «실행 맥» 한 대만 돌린다(개발 10 — 맥 둘이 같은 부탁을 두 번 보내지 않게).
-                if !crate::sync::is_runner(&tx).map_err(|e| e.to_string())? {
+                if !crate::sync::may_run(&tx, due.start_at, now).map_err(|e| e.to_string())? {
                     return Ok(None);
                 }
                 if any || due.start_at > now {
@@ -688,7 +692,8 @@ impl Store {
                 .query_row(
                     "SELECT r.session_id FROM runs r JOIN errands e ON e.item_id = r.item_id
                      WHERE e.series_id = ?1 AND e.target = ?2 AND r.status = 'done' AND r.session_id IS NOT NULL
-                     ORDER BY r.id DESC LIMIT 1",
+                       AND (r.device IS NULL OR r.device = (SELECT value FROM settings WHERE key = 'device_id'))
+                     ORDER BY r.started_at DESC, r.id DESC LIMIT 1",
                     params![sid, due.target],
                     |r| r.get::<_, String>(0),
                 )
@@ -821,8 +826,9 @@ impl Store {
         let conn = self.conn();
         let mut stmt = conn
             .prepare_cached(
-                "SELECT id, status, started_at, finished_at, late_ms, sent_text, response, stderr, read_at, resumed_session, session_id
-                 FROM runs WHERE item_id = ?1 ORDER BY id DESC LIMIT 50",
+                "SELECT id, status, started_at, finished_at, late_ms, sent_text, response, stderr, read_at, resumed_session, session_id,
+                        (r.device IS NULL OR r.device = (SELECT value FROM settings WHERE key = 'device_id'))
+                 FROM runs r WHERE item_id = ?1 ORDER BY started_at DESC, id DESC LIMIT 50",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
@@ -830,7 +836,7 @@ impl Store {
                 let status: String = r.get(1)?;
                 Ok(RunView {
                     id: r.get(0)?,
-                    can_resume: status == "done" && r.get::<_, Option<String>>(10)?.is_some(),
+                    can_resume: status == "done" && r.get::<_, Option<String>>(10)?.is_some() && r.get::<_, bool>(11)?,
                     status,
                     started_at: r.get(2)?,
                     finished_at: r.get(3)?,

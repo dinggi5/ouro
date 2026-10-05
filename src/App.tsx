@@ -266,7 +266,14 @@ function App() {
     return () => window.clearTimeout(t);
   }, [toast]);
 
+  /** 업데이트를 받는 중이면 곧 다시 켜진다 — 고치기 시트도 열지 않는다(쓰던 초안이 사라진다, 코덱스 개발 8 P1·개발 10). */
+  const blockedByUpdate = () => {
+    if (update.installing) showToast("업데이트를 설치하는 중이에요");
+    return update.installing;
+  };
+
   const openErrand = (e: Errand) => {
+    if (blockedByUpdate()) return;
     setErrandSheet({ id: e.id, draft: errandToDraft(e), key: ++sheetKey.current });
     // 열어 본 답은 «읽음» — 점이 액센트에서 회색으로.
     if (e.run?.status === "done" && !e.run.read) {
@@ -274,7 +281,10 @@ function App() {
     }
   };
 
-  const openEdit = (e: OuroEvent) => setSheet({ draft: fromEvent(e), editing: e, key: ++sheetKey.current });
+  const openEdit = (e: OuroEvent) => {
+    if (blockedByUpdate()) return;
+    setSheet({ draft: fromEvent(e), editing: e, key: ++sheetKey.current });
+  };
 
   /** 만든 날로 커서를 옮긴다 — 다른 날에 만들었는데 목록에 안 보이면 «저장이 안 됐나» 한다. */
   const reveal = (saved: OuroEvent) => {
@@ -531,6 +541,7 @@ function App() {
   };
 
   const editErrandProposal = (p: ErrandProposal) =>
+    !blockedByUpdate() &&
     setErrandSheet({
       id: null,
       draft: errandInputToDraft(errandInputOf(p)),
@@ -540,6 +551,7 @@ function App() {
     });
 
   const editProposal = (p: Proposal) =>
+    !blockedByUpdate() &&
     setSheet({ draft: fromEvent(asEvent(p)), editing: null, key: ++sheetKey.current, proposalId: p.id });
 
   const remove = async () => {

@@ -27,7 +27,7 @@ export function SyncCard({ sync, hidden, now }: { sync: SyncState; hidden: boole
         </button>
       </div>
       <p className="text-caption text-ink-secondary">
-        일정·부탁·답이 내 iCloud 로 내 기기끼리 오가요. 제목과 글은 종단간 암호화돼 애플도 못 읽어요.
+        일정·부탁·답이 내 iCloud 로 내 기기끼리 오가요. 제목과 글은 암호화 칸에 담겨요 — iCloud «고급 데이터 보호» 를 켜 두면 애플도 못 읽어요.
       </p>
       <p role="status" className={`num mt-1 text-caption ${bad ? "text-danger" : "text-ink-muted"}`}>
         {stateLine(s, now)}

@@ -6,7 +6,7 @@
 //     받은 것을 적는 동안은 `applying` 깃발로 트리거를 멈춘다 — 받은 걸 도로 보내는 메아리가 없게.
 //   · 레코드 이름 = `uid`(스키마 7). 정수 id 를 가리키는 칸(부탁의 이어서·반복·실행의 부탁 등)은 **uid 로 바꿔 싣고**, 받을 때 이 기기의 id 로 푼다.
 //     아직 못 푸는 참조(부탁보다 실행이 먼저 온 경우 등)는 `sync_inbox` 에 세워 두고 다음 묶음 뒤에 다시 푼다.
-//   · 칸은 둘로 나눈다: 그냥 칸(시각·상태)과 **비밀 칸**(제목·메모·부탁 글·답 — CloudKit `encryptedValues`, 종단간 암호화, PLAN §13).
+//   · 칸은 둘로 나눈다: 그냥 칸(시각·상태)과 **비밀 칸**(제목·메모·부탁 글·답 — CloudKit `encryptedValues` — iCloud «고급 데이터 보호» 를 켜면 종단간, PLAN §13).
 //   · **충돌은 앱이 정한다.** 일정·부탁 = 늦게 고친 쪽(`updated_at`). 실행 = 끝난 쪽(도는 중 < 끝남), 읽음은 어느 쪽이든 읽었으면 읽음.
 //     제안 = 먼저 결정된 쪽. 내 쪽이 이기면 다시 보낸다.
 //   · **실행 맥**: 동기화가 켜지면 예약 부탁은 «실행 맥» 한 대만 돌린다(PLAN §13 — 이중 실행 방지). 설정은 `Config/runner` 레코드로 오간다.
@@ -250,13 +250,30 @@ fn set_flag(conn: &Connection, k: &str, v: i64) -> rusqlite::Result<()> {
     conn.execute("UPDATE sync_flags SET v = ?2 WHERE k = ?1", params![k, v]).map(|_| ())
 }
 
-/// 이 맥이 예약 부탁을 돌려도 되나. 동기화가 꺼져 있으면 언제나 된다(혼자 쓰는 맥).
-/// 켜져 있으면 실행 맥으로 지정된 맥만 — 아직 아무도 안 맡았으면 아무도 안 돌린다(첫 받기가 끝나면 누군가 맡는다).
+/// 실행 맥이 «지금도 맡고 있다» 고 믿을 수 있는 받기의 신선도. 그사이 다른 맥이 넘겨받았으면 늦어도 이만큼 뒤엔 안다
+/// (받기는 2분마다). 오프라인이라 못 받는 맥은 예약 부탁을 멈춘다 — 어차피 그 맥은 Claude 에도 못 닿는다(코덱스 개발 10).
+pub(crate) const RUNNER_FRESH_MS: i64 = 5 * 60 * 1000;
+
+/// 이 맥이 실행 맥인가(동기화가 켜져 있을 때의 지정만 본다).
 pub(crate) fn is_runner(conn: &Connection) -> rusqlite::Result<bool> {
-    if flag(conn, "on")? == 0 {
-        return Ok(true);
-    }
     Ok(setting(conn, "sync_runner")?.is_some_and(|r| r == device_id(conn).unwrap_or_default()))
+}
+
+/// 이 맥이 `start_at` 의 예약 부탁을 지금 돌려도 되나(`claim_run` 이 같은 트랜잭션에서 묻는다).
+///   · 동기화가 켜져 있으면: 실행 맥이고, 그 지정이 서버에 올라갔고(넘겨받기는 서버가 받은 뒤에야 효력), 최근 받기가 성공했을 때만.
+///     아직 아무도 안 맡았으면 아무도 안 돌린다(첫 받기가 끝나면 누군가 맡는다).
+///   · 꺼져 있으면 돌린다(혼자 쓰는 맥). 단 **실행 맥이 아닌 채로 껐다면** 끈 때보다 앞선 부탁은 돌리지 않는다 —
+///     그건 실행 맥이 돌렸을 수 있고, 그 답을 이 맥이 아직 못 받았을 수 있다(계정이 바뀌어 저절로 꺼진 때도 같다).
+pub(crate) fn may_run(conn: &Connection, start_at: i64, now: i64) -> rusqlite::Result<bool> {
+    if flag(conn, "on")? == 0 {
+        let off_at = setting(conn, "sync_off_at")?.and_then(|v| v.parse::<i64>().ok());
+        return Ok(off_at.is_none_or(|t| start_at >= t));
+    }
+    if !is_runner(conn)? || setting(conn, "sync_runner_unconfirmed")?.is_some() {
+        return Ok(false);
+    }
+    let last = setting(conn, "sync_last_fetch")?.and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+    Ok(now - last < RUNNER_FRESH_MS)
 }
 
 /// 보낼 목록에 «저장» 한 줄을 직접 넣는다(트리거가 꺼진 `applying` 중에 «내 쪽이 이겼다» 를 적을 때, 설정 레코드).
@@ -385,10 +402,15 @@ pub(crate) fn merge(ty: &str, local: &Map<String, Value>, remote: &Map<String, V
             }
         }
         "Run" => {
-            // 도는 중 < 끝남. 둘 다 끝났으면 서버 판(한 실행은 한 맥만 끝낸다 — 갈릴 일이 거의 없다).
-            let lf = local.get("finished_at").is_some_and(|v| !v.is_null());
-            let rf = remote.get("finished_at").is_some_and(|v| !v.is_null());
-            let mut m = if lf && !rf { local.clone() } else { remote.clone() };
+            // 도는 중 < 끝남 < 답이 있는 끝남. 그 밖엔 서버 판.
+            // 답 있는 쪽이 이기는 이유: 못 적은 답을 다음에 켤 때 복구하면(dispatch `recover_pending`) 그사이 «끊김» 판이
+            // 서버에 먼저 올라가 있을 수 있다 — 서버 판을 따르면 복구한 답이 지워지고 복구 파일도 이미 없다(코덱스 개발 10 P0).
+            let rank = |m: &Map<String, Value>| {
+                let finished = m.get("finished_at").is_some_and(|v| !v.is_null());
+                let answered = m.get("response").is_some_and(|v| !v.is_null());
+                finished as u8 + answered as u8
+            };
+            let mut m = if rank(local) > rank(remote) { local.clone() } else { remote.clone() };
             // 읽음은 어느 쪽에서든 읽었으면 읽음 — 이른 시각으로.
             let read = [int(local, "read_at"), int(remote, "read_at")].into_iter().flatten().min();
             m.insert("read_at".into(), read.map_or(Value::Null, Value::from));
@@ -511,6 +533,9 @@ fn apply_one(conn: &Connection, rec: &Record) -> Result<Applied, String> {
             }
         } else {
             let s = spec_of_type(&rec.ty).expect("keys_of 가 걸렀다");
+            if let Some(l) = &local {
+                undo_losing_approval(conn, &rec.ty, &l.all(), &merged).map_err(|e| e.to_string())?;
+            }
             let id: Option<i64> = conn
                 .query_row(&format!("SELECT id FROM {} WHERE uid = ?1", s.table), [&rec.name], |r| r.get(0))
                 .optional()
@@ -542,11 +567,42 @@ fn apply_one(conn: &Connection, rec: &Record) -> Result<Applied, String> {
     if same(&merged, &remote, &keys) {
         // 서버 판이 그대로 이겼다 — 이 기기의 보내지 못한 옛 변경은 진 것이다.
         conn.execute("DELETE FROM sync_outbox WHERE key = ?1", [&key]).map_err(|e| e.to_string())?;
+        if rec.ty == CONFIG_TYPE {
+            conn.execute("DELETE FROM settings WHERE key = 'sync_runner_unconfirmed'", []).map_err(|e| e.to_string())?;
+        }
     } else {
         let (tbl, rid) = key.split_once(':').map(|(t, r)| (t.to_string(), r.parse::<i64>().ok())).unwrap_or_default();
         enqueue_save(conn, &key, &tbl, rid).map_err(|e| e.to_string())?;
     }
     Ok(Applied::Done)
+}
+
+/// 같은 제안을 두 기기가 따로 결정했고 이 기기의 결정이 졌다 — 진 승인이 만든 일정·부탁을 휴지통으로(한 번도 안 돈 것만).
+/// 안 그러면 제안은 «거절» 인데 부탁은 남아 돌거나, 같은 일정이 둘 생긴다(코덱스 개발 10).
+fn undo_losing_approval(conn: &Connection, ty: &str, local: &Map<String, Value>, merged: &Map<String, Value>) -> rusqlite::Result<()> {
+    let field = match ty {
+        "Proposal" => "event",
+        "ErrandProposal" => "errand",
+        _ => return Ok(()),
+    };
+    let Some(mine) = text(local, field) else { return Ok(()) };
+    if text(merged, field) == Some(mine) {
+        return Ok(());
+    }
+    let now = now_ms();
+    // applying 중이라 트리거가 안 적는다 — 이 휴지통 이동은 다른 기기에도 알려야 하므로 직접 싣는다.
+    let id: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM items WHERE uid = ?1 AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM runs WHERE item_id = items.id)",
+            [mine],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(id) = id {
+        conn.execute("UPDATE items SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1", params![id, now])?;
+        enqueue_save(conn, &format!("items:{id}"), "items", Some(id))?;
+    }
+    Ok(())
 }
 
 /// 서버에서 지워진 레코드. 실행 기록이 남은 부탁은 지우지 않는다 — 바깥으로 나간 원문을 지키고(CLAUDE.md 불변 규칙),
@@ -642,14 +698,24 @@ pub(crate) fn apply(store: &Store, records: &[Record], deleted: &[(String, Strin
 pub(crate) fn set_on(store: &Store, on: bool) -> Result<(), String> {
     let mut conn = store.conn();
     let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let was_on = flag(&tx, "on").map_err(|e| e.to_string())? == 1;
     if on {
         let me = device_id(&tx).map_err(|e| e.to_string())?;
         tx.execute("UPDATE runs SET device = ?1 WHERE device IS NULL", [&me]).map_err(|e| e.to_string())?;
         set_flag(&tx, "on", 1).map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM settings WHERE key IN ('sync_off_at', 'sync_last_fetch')", []).map_err(|e| e.to_string())?;
         enqueue_all(&tx).map_err(|e| e.to_string())?;
     } else {
+        if was_on {
+            if is_runner(&tx).map_err(|e| e.to_string())? {
+                tx.execute("DELETE FROM settings WHERE key = 'sync_off_at'", []).map_err(|e| e.to_string())?;
+            } else {
+                put_setting(&tx, "sync_off_at", &now_ms().to_string()).map_err(|e| e.to_string())?;
+            }
+        }
         set_flag(&tx, "on", 0).map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM sync_outbox", []).map_err(|e| e.to_string())?;
+        // 삭제 줄은 남긴다 — 다시 켤 때 `enqueue_all` 은 있는 줄만 싣는다. 지운 걸 되살릴 길이 이것뿐이다(코덱스 개발 10).
+        tx.execute("DELETE FROM sync_outbox WHERE op = 'save'", []).map_err(|e| e.to_string())?;
     }
     tx.commit().map_err(|e| e.to_string())
 }
@@ -668,6 +734,8 @@ pub(crate) fn claim_runner(store: &Store, name: &str, only_if_none: bool) -> Res
     put_setting(&conn, "sync_runner", &me).map_err(|e| e.to_string())?;
     put_setting(&conn, "sync_runner_name", name).map_err(|e| e.to_string())?;
     put_setting(&conn, "sync_runner_at", &now_ms().to_string()).map_err(|e| e.to_string())?;
+    // 서버가 받기 전엔 효력이 없다 — 옛 실행 맥이 아직 모르는 사이 둘이 같이 돌지 않게(`may_run`, 코덱스 개발 10).
+    put_setting(&conn, "sync_runner_unconfirmed", "1").map_err(|e| e.to_string())?;
     enqueue_save(&conn, "config:runner", "config", None).map_err(|e| e.to_string())?;
     Ok(true)
 }
@@ -933,8 +1001,7 @@ impl Syncer {
     fn handle(&self, v: &Value) {
         let ev = v.get("ev").and_then(Value::as_str).unwrap_or_default();
         if std::env::var_os("OURO_SYNC_TRACE").is_some() {
-            let mut s = v.to_string();
-            s.truncate(400);
+            let s: String = v.to_string().chars().take(400).collect();
             eprintln!("[{}] {s}", self.inner.this_name);
         }
         let id = v.get("id").cloned().unwrap_or(Value::Null);
@@ -992,7 +1059,8 @@ impl Syncer {
             "synced" => {
                 lock(&self.inner.status).last_sync = Some(now_ms());
                 if v.get("reason").and_then(Value::as_str) == Some("fetch") {
-                    // 첫 받기가 끝났는데 실행 맥이 없다 → 이 맥이 맡는다.
+                    let _ = put_setting(&self.inner.store.conn(), "sync_last_fetch", &now_ms().to_string());
+                    // 받기가 성공했는데 실행 맥이 없다 → 이 맥이 맡는다(헬퍼는 실패한 받기를 «synced» 로 안 보낸다).
                     if let Ok(true) = claim_runner(&self.inner.store, &self.inner.this_name, true) {
                         (self.inner.on_change)(Change::Data);
                     }
@@ -1051,6 +1119,9 @@ impl Syncer {
                 "INSERT INTO sync_meta (name, system) VALUES (?1, ?2) ON CONFLICT (name) DO UPDATE SET system = excluded.system",
                 params![name, sys],
             );
+            if name == RUNNER {
+                let _ = conn.execute("DELETE FROM settings WHERE key = 'sync_runner_unconfirmed'", []);
+            }
             if let Some((key, seq)) = lock(&self.inner.inflight).remove(name) {
                 let _ = conn.execute("DELETE FROM sync_outbox WHERE key = ?1 AND seq <= ?2", params![key, seq]);
             }
@@ -1379,9 +1450,10 @@ mod tests {
     #[test]
     fn runner_gates_scheduled_runs_only_when_sync_is_on() {
         let s = Store::open_in_memory();
-        assert!(is_runner(&s.conn()).unwrap(), "혼자 쓰면 언제나 돌린다");
+        let now = now_ms();
+        assert!(may_run(&s.conn(), now, now).unwrap(), "혼자 쓰면 언제나 돌린다");
         set_on(&s, true).unwrap();
-        assert!(!is_runner(&s.conn()).unwrap(), "켰는데 실행 맥이 없으면 아무도 안 돌린다");
+        assert!(!may_run(&s.conn(), now, now).unwrap(), "켰는데 실행 맥이 없으면 아무도 안 돌린다");
         let er = s
             .create_errand(&crate::errands::ErrandInput { prompt: "요약".into(), start_at: now_ms() - 1000, ..Default::default() })
             .unwrap();
@@ -1390,6 +1462,11 @@ mod tests {
         assert!(claim_runner(&s, "이 맥", true).unwrap());
         assert!(!claim_runner(&s, "이 맥", true).unwrap(), "이미 있으면 안 뺏는다");
         assert!(is_runner(&s.conn()).unwrap());
+        put_setting(&s.conn(), "sync_last_fetch", &now_ms().to_string()).unwrap();
+        assert!(!may_run(&s.conn(), now, now_ms()).unwrap(), "서버가 받기 전엔 효력이 없다");
+        s.conn().execute("DELETE FROM settings WHERE key = 'sync_runner_unconfirmed'", []).unwrap();
+        assert!(may_run(&s.conn(), now, now_ms()).unwrap());
+        assert!(!may_run(&s.conn(), now, now_ms() + RUNNER_FRESH_MS).unwrap(), "받기가 오래되면 멈춘다");
         assert!(s.claim_run(er.id, crate::errands::Claim::Scheduled, skip).unwrap().is_some());
         // 다른 맥이 실행 맥을 가져가면 이 맥은 멈춘다.
         let mut cfg = Map::new();
@@ -1399,6 +1476,57 @@ mod tests {
         let rec = split(CONFIG_TYPE, RUNNER, cfg, None);
         apply(&s, &[rec], &[]).unwrap();
         assert!(!is_runner(&s.conn()).unwrap());
+        // 실행 맥이 아닌 채로 끄면, 끈 때보다 앞선 부탁은 안 돌린다(그건 실행 맥의 몫이었다).
+        set_on(&s, false).unwrap();
+        let t = now_ms();
+        assert!(!may_run(&s.conn(), t - 1000, t).unwrap());
+        assert!(may_run(&s.conn(), t + 60_000, t).unwrap(), "끈 뒤의 부탁은 이 맥이 돌린다");
+    }
+
+    #[test]
+    fn losing_approval_is_undone() {
+        let a = Store::open_in_memory();
+        let b = Store::open_in_memory();
+        set_on(&a, true).unwrap();
+        set_on(&b, true).unwrap();
+        let p = a.add_proposal("claude", &event("치과", 1_900_000_000_000)).unwrap();
+        let (recs, _) = drain(&a);
+        apply(&b, &recs, &[]).unwrap();
+        let bp: i64 = b.conn().query_row("SELECT id FROM proposals", [], |r| r.get(0)).unwrap();
+        // 둘이 따로 승인 — A 가 먼저.
+        a.approve_proposal(p.id, None).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+        b.approve_proposal(bp, None).unwrap();
+        let (recs, _) = drain(&a);
+        apply(&b, &recs, &[]).unwrap();
+        let live: i64 = b.conn().query_row("SELECT COUNT(*) FROM items WHERE deleted_at IS NULL", [], |r| r.get(0)).unwrap();
+        assert_eq!(live, 1, "진 승인이 만든 일정은 휴지통으로");
+    }
+
+    #[test]
+    fn deletes_made_while_off_reach_the_server_later() {
+        let s = Store::open_in_memory();
+        set_on(&s, true).unwrap();
+        let e = s.create_event(&event("치과", 1_800_000_000_000)).unwrap();
+        let uid = uid_of(&s, "items", e.id);
+        s.conn().execute("INSERT INTO sync_meta (name, system) VALUES (?1, 'x')", [&uid]).unwrap();
+        set_on(&s, false).unwrap();
+        s.conn().execute("DELETE FROM items WHERE id = ?1", [e.id]).unwrap();
+        set_on(&s, true).unwrap();
+        assert!(outbox_since(&s.conn(), 0).unwrap().iter().any(|p| !p.save && p.name == uid));
+    }
+
+    #[test]
+    fn recovered_answer_beats_orphan_failure() {
+        let mut failed = Map::new();
+        failed.insert("status".into(), "failed".into());
+        failed.insert("finished_at".into(), 5.into());
+        failed.insert("response".into(), Value::Null);
+        let mut done = failed.clone();
+        done.insert("status".into(), "done".into());
+        done.insert("response".into(), "답".into());
+        assert_eq!(merge("Run", &done, &failed)["response"], "답");
+        assert_eq!(merge("Run", &failed, &done)["response"], "답");
     }
 
     #[test]
@@ -1447,6 +1575,7 @@ mod tests {
         wait("A 의 첫 받기", &|| sa.status().last_sync.is_some());
         sa.make_runner().unwrap();
         assert!(is_runner(&a.conn()).unwrap());
+        wait("A 의 실행 맥 지정이 서버에", &|| setting(&a.conn(), "sync_runner_unconfirmed").unwrap().is_none());
         wait("A 의 보낼 목록 비우기", &|| {
             a.conn().query_row("SELECT COUNT(*) FROM sync_outbox", [], |r| r.get::<_, i64>(0)).unwrap() == 0
         });

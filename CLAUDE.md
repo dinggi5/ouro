@@ -8,6 +8,10 @@
 - 스택: Tauri 2 (확정). 캘린더는 **앱 자체 캘린더** — 일정·부탁·답 전부 `~/.ouro/ouro.db`(SQLite). 맥 기본 캘린더(EventKit)는 v0.2 이후 선택 기능.
 - MCP 사이드카(`ouro-mcp/`, 독립 크레이트)는 DB 를 직접 열지 않는다 — 소켓 `~/.ouro/ouro.sock` 으로 앱(`src-tauri/src/mcp.rs`)에 묻는다.
   소켓엔 **승인 문이 없다** — AI 제안이 일정이 되는 길은 팝오버의 `approve_proposal` 하나.
+- iCloud 동기화(개발 10): CloudKit 은 헬퍼 앱 `sync/`(OuroSync.app, Swift 패키지 OuroSyncKit — iOS 와 공용)가 맡고 앱(`src-tauri/src/sync.rs`)과 표준입출력 JSON 줄로만 말한다.
+  헬퍼도 DB 를 안 연다. 바뀐 줄은 스키마 9 트리거가 `sync_outbox` 에 적는다. 동기화 중 예약 부탁은 «실행 맥» 한 대만 돌린다.
+  헬퍼 개발 빌드 `./scripts/build-sync-helper.sh`(Xcode 자동 서명, 컨테이너 `iCloud.com.dinggi5.ouro`) → 디버그 앱·테스트에 `OURO_SYNC_HELPER=<경로>`.
+  🔴 CloudKit 은 변경을 만든 **기기**에 그 변경을 다시 주지 않는다 — 같은 맥의 두 프로세스로는 «이어 받기» 를 검증할 수 없다.
 - `src-tauri` 를 빌드·테스트하기 전에 `./scripts/build-sidecars.sh` (externalBin 이라 사이드카 파일이 없으면 `cargo test` 도 실패한다).
 - 불변 규칙: 바깥에서 들어온 글(.ics·AI 답)은 부탁 문장이 될 수 없다 / AI 가 만든 부탁은 사람 승인 전엔 안 돈다 / 바깥으로 나간 원문은 저장한다.
 - 날짜 계산은 LLM 이 아니라 결정적 파서가 한다.
