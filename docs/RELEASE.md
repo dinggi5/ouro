@@ -61,6 +61,8 @@ curl -sL https://github.com/dinggi5/ouro/releases/latest/download/latest.json | 
 `bundle.macOS.files` 가 `Ouro.app/Contents/Helpers/` 로 넣는다. 번들러는 이 헬퍼를 다시 서명하지 않는다. «동기화 헬퍼 검증» 단계가
 팀·번들 ID·Developer ID·타임스탬프·하드닝·운영 엔타이틀먼트·프로파일·버전을 본다 — 🔴 운영이 아니면 사용자 일정이 개발 CloudKit DB 로 간다.
 
+- **스키마 정본 `sync/schema.ckdb`**(개발 16): 개발 환경 스키마는 «앱이 실제로 저장해 본 칸» 만 생겨서 반쪽이었다(Run·Proposal·ErrandProposal 통째로 없음).
+  칸을 바꾸면 이 파일도 고치고(`Schema.swift` 와 같은 목록) 콘솔 «Import Schema…» 로 개발 환경에 넣은 뒤 운영 배포.
 - **CloudKit 운영 스키마는 사람이 배포한다** — CloudKit Console(icloud.developer.apple.com) → `iCloud.com.dinggi5.ouro` →
   «Deploy Schema Changes…» (개발 → 운영). 레코드 종류가 늘 때마다(새 칸 포함) 다시. 안 하면 운영에서 저장이 «알 수 없는 종류» 로 실패한다.
 
