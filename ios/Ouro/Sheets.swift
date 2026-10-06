@@ -119,8 +119,15 @@ struct EventSheet: View {
                     }
                 DatePicker("시작", selection: $d.start, displayedComponents: d.allDay ? .date : [.date, .hourAndMinute])
                     .onChange(of: d.start) { old, new in
-                        // 시작을 옮기면 길이를 지킨 채 끝도 따라간다.
-                        d.end = d.end.addingTimeInterval(new.timeIntervalSince(old))
+                        // 시작을 옮기면 길이를 지킨 채 끝도 따라간다. 종일은 초가 아니라 **날 수**로 — 서머타임 경계에서
+                        // 23·25시간짜리 날 때문에 하루가 줄지 않게(코덱스 개발 16 P2).
+                        let cal = Calendar.current
+                        if d.allDay, let days = cal.dateComponents([.day], from: cal.startOfDay(for: old), to: cal.startOfDay(for: new)).day,
+                           let moved = cal.date(byAdding: .day, value: days, to: d.end) {
+                            d.end = moved
+                        } else {
+                            d.end = d.end.addingTimeInterval(new.timeIntervalSince(old))
+                        }
                     }
                 DatePicker("끝", selection: $d.end, in: d.start..., displayedComponents: d.allDay ? .date : [.date, .hourAndMinute])
             }

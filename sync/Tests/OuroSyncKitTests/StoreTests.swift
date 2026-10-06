@@ -261,6 +261,25 @@ let fixtures = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appen
     #expect(s.pendingCount == 0)
 }
 
+/// 계정이 바뀌어 비울 때 못 보낸 고침은 옆 파일로 남는다(코덱스 개발 16 P0).
+@Test @MainActor func accountChangeKeepsUnsentEditsAside() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ouro-unsent-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let s = RecordStore(url: dir.appendingPathComponent("records.json"))
+    var d = EventDraft()
+    d.title = "못 보낸 치과"
+    let name = try s.createEvent(d)
+    #expect(s.forgetAccount() == 1)
+    #expect(s.records.isEmpty)
+    let files = try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasPrefix("unsent-") }
+    #expect(files.count == 1)
+    let kept = try JSONDecoder().decode(RecordStore.Disk.self, from: Data(contentsOf: dir.appendingPathComponent(files[0])))
+    #expect(kept.records[name] != nil)
+    // 보낼 게 없으면 파일을 만들지 않는다.
+    #expect(s.forgetAccount() == 0)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasPrefix("unsent-") }.count == 1)
+}
+
 /// 시트를 연 사이 맥에서 고친 게 오면 옛 초안이 덮지 않는다(코덱스 개발 13 P1 — 맥 `update_event_if` 와 같다).
 @Test @MainActor func staleSheetDoesNotOverwrite() throws {
     let (phone, mac) = twoStores()

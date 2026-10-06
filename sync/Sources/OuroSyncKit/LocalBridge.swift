@@ -121,9 +121,14 @@ public final class LocalBridge: Outlet, @unchecked Sendable {
                 store.onPending?(s, d)
             case "signOut", "switchAccounts":
                 // 폰의 저장소는 그 계정의 거울 — 비우고, 새 계정이면 엔진이 처음부터 받는다(엔진 상태 파일은 헬퍼 코어가 지웠다).
-                store.forgetAccount()
+                let kept = store.forgetAccount()
                 store.sync.lastSync = nil
-                store.sync.error = msg.account == "signOut" ? "iCloud 에서 로그아웃돼 일정을 비웠어요" : "iCloud 계정이 바뀌어 새로 받아요"
+                // 계정 상태도 바꾼다 — 안 그러면 뒤이은 «synced» 가 «available» 검사를 통과해 이 경고를 지운다(코덱스 개발 16 P2).
+                store.sync.account = msg.account == "signOut" ? "noAccount" : nil
+                if store.loadError == nil {
+                    let note = kept > 0 ? " · 못 보낸 \(kept)개는 기기에 따로 보관했어요" : ""
+                    store.sync.error = (msg.account == "signOut" ? "iCloud 에서 로그아웃돼 일정을 비웠어요" : "iCloud 계정이 바뀌어 새로 받아요") + note
+                }
             default:
                 break
             }
@@ -131,8 +136,10 @@ public final class LocalBridge: Outlet, @unchecked Sendable {
             if msg.reason == "encryptedDataReset" {
                 store.reuploadAll()
             } else {
-                store.forgetAccount()
-                store.sync.error = "iCloud 에서 Ouro 데이터가 지워졌어요"
+                let kept = store.forgetAccount()
+                if store.loadError == nil {
+                    store.sync.error = "iCloud 에서 Ouro 데이터가 지워졌어요" + (kept > 0 ? " · 못 보낸 \(kept)개는 기기에 따로 보관했어요" : "")
+                }
             }
         case "error":
             // 계정이 문제면 엔진의 영어 오류 대신 계정 이야기를 한다.

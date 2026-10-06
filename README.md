@@ -1,8 +1,8 @@
 # Ouro (우로우로)
 
-**이 맥에만 저장되는 메뉴바 캘린더 — 정해진 시간에 Claude Code·Codex 에게 일을 «부탁» 하고, 답을 다시 캘린더에 걸어 둬요.**
+**맥에 저장되는 메뉴바 캘린더(원하면 iCloud 로 아이폰과 동기화) — 정해진 시간에 Claude Code·Codex 에게 일을 «부탁» 하고, 답을 다시 캘린더에 걸어 둬요.**
 
-- 일정은 `~/.ouro/ouro.db`(SQLite) 한 파일에만 있어요. 계정·서버·클라우드 없음.
+- 일정은 `~/.ouro/ouro.db`(SQLite) 한 파일에 있어요. 따로 만드는 계정·서버 없음. iCloud 동기화는 켤 때만(기본 꺼짐).
 - **부탁**: «매일 9시, 오늘 할 일 정리해 줘 — 코덱스한테» 를 걸어 두면 그 시간에 내 맥의 `claude`·`codex` 가 돌고, 답이 그 칸에 남아요.
 - **MCP**: Claude Code·Claude 데스크톱이 일정을 읽고 빈 시간을 찾고, 일정·부탁을 **제안**해요. 제안은 팝오버 카드를 사람이 승인해야만 일정·부탁이 돼요.
 - 오픈소스(MIT). macOS 26 이상, Apple Silicon.
@@ -70,7 +70,9 @@ AI 가 할 수 있는 것: 일정 읽기(`get_agenda`) · 빈 시간 찾기(`fin
 
 - 부탁의 글(과 이어서 묻는 대화)은 그 부탁을 받는 쪽(Anthropic 또는 OpenAI)으로 내 CLI 를 통해 나가요.
 - MCP 로 붙은 AI 에게는 그 AI 가 물은 기간의 일정(비공개 제외)이 가요.
-- 업데이트 확인 때 GitHub 에서 `latest.json` 을 받아요.
+- 업데이트 확인 때 GitHub 에서 `latest.json` 을 받아요(설정에서 자동 확인을 끌 수 있어요).
+- **iCloud 동기화를 켜면**(설정 창, 기본 꺼짐) 일정·메모·부탁·답·제안이 **내 iCloud 개인 데이터베이스**로 가서 내 기기끼리 오가요.
+  제목과 글은 암호화 칸에 담겨요 — iCloud «고급 데이터 보호» 를 켜 두면 애플도 못 읽어요. «AI 에게 숨기기»(비공개)는 AI 에게만 숨기는 것이라 iCloud 에는 같이 가요.
 - 그 밖엔 없어요. 분석·추적 없음.
 
 ## 지우기
@@ -100,10 +102,10 @@ Rust(stable)·Node 20.19+ 필요. 배포본 만들기는 [docs/RELEASE.md](docs/
 
 ## English
 
-**Ouro is a menu bar calendar for macOS that stores everything on this Mac only — and can schedule "errands": a message your own Claude Code or Codex CLI runs at a set time, with the answer kept on the calendar.**
+**Ouro is a menu bar calendar for macOS that stores everything on your Mac (with optional iCloud sync to the iPhone app) — and can schedule "errands": a message your own Claude Code or Codex CLI runs at a set time, with the answer kept on the calendar.**
 
 - Install: `brew install --cask dinggi5/tap/ouro` (macOS 26+, Apple Silicon), or the notarized DMG from Releases.
 - Errands run your locally installed `claude` / `codex` in conversation-only mode (no file, shell, browser, or computer-use tools).
 - MCP: `claude mcp add -s user ouro /Applications/Ouro.app/Contents/MacOS/ouro-mcp`. AI clients can read events, find free time, and **propose** events or errands — nothing is added or run until you approve the card in the popover. Private events are never shared.
-- Data lives in `~/.ouro/ouro.db`. Uninstalling the app keeps it; delete `~/.ouro` yourself if you want it gone.
+- Data lives in `~/.ouro/ouro.db`. iCloud sync is off by default; when on, events, errands and answers go to your own iCloud private database (titles and text in encrypted fields). Uninstalling the app keeps it; delete `~/.ouro` yourself if you want it gone.
 - License: MIT.

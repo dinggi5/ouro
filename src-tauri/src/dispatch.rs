@@ -39,7 +39,7 @@ use crate::errands::{title_of, Claim, Due, Outcome};
 use crate::store::{self, now_ms, Store};
 
 const MAX_NAP: Duration = Duration::from_secs(30);
-const RUN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+pub(crate) const RUN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const SKIP_GRACE_MS: i64 = 5 * 60 * 1000;
 const LATE_RUN_MAX_MS: i64 = 12 * 60 * 60 * 1000;
 /// 읽어 둘 출력 상한(바이트). 넘는 건 버리되 계속 비워 준다(안 비우면 자식이 파이프에 막힌다).

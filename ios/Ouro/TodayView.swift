@@ -25,6 +25,9 @@ enum Sheet: Identifiable {
 struct TodayView: View {
     @Bindable var model: AppModel
     @State private var day = Calendar.current.startOfDay(for: Date())
+    /// 마지막으로 본 «오늘» — 자정을 넘겨 돌아왔을 때 오늘을 보고 있었으면 새 오늘로 옮긴다(고른 날은 그대로, 코덱스 개발 16 P2).
+    @State private var lastToday = Calendar.current.startOfDay(for: Date())
+    @Environment(\.scenePhase) private var phase
     @State private var sheet: Sheet?
     @State private var toast: String?
     @State private var quick = ""
@@ -72,6 +75,8 @@ struct TodayView: View {
             .background(Color.canvas.opacity(0.96))
         }
         .onChange(of: model.request, initial: true) { _, r in take(r) }
+        .onChange(of: phase) { _, p in if p == .active { rollToday() } }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in rollToday() }
         .task {
             // 데모 화면 확인용: `-demo -quick «내일 3시 치과»` 면 입력칸에 그 글을 넣고 연다(시뮬레이터 자동 입력이 한글을 못 친다).
             let args = ProcessInfo.processInfo.arguments
@@ -122,6 +127,14 @@ struct TodayView: View {
     }
 
     /// 컨트롤 버튼·Siri 가 보낸 부탁을 받는다. 앱이 막 켜졌으면 화면이 뜬 뒤에 온다(`initial`).
+    /// 날이 바뀌었으면: 오늘을 보고 있던 화면만 새 오늘로(빠른 입력 «3시 치과» 가 어제로 가지 않게).
+    private func rollToday() {
+        let now = cal.startOfDay(for: Date())
+        guard now != lastToday else { return }
+        if day == lastToday { day = now }
+        lastToday = now
+    }
+
     private func take(_ r: AppRequest?) {
         guard let r else { return }
         model.request = nil

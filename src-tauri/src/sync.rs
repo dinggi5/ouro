@@ -255,10 +255,14 @@ fn set_flag(conn: &Connection, k: &str, v: i64) -> rusqlite::Result<()> {
 pub(crate) const RUNNER_FRESH_MS: i64 = 5 * 60 * 1000;
 
 /// 다른 맥에게서 실행 맥을 넘겨받았을 때, 서버가 받은 뒤에도 이만큼 기다렸다 돌린다(개발 16, 코덱스 개발 10~15 P1).
-/// 옛 실행 맥은 다음 받기(2분마다) 전까지 자기가 실행 맥이라 믿고 돌린다 — 못 받으면 마지막 받기 + `RUNNER_FRESH_MS` 에 스스로 멈춘다.
-/// 그러니 서버에 올라간 뒤 «신선도 + 여유 1분» 을 기다리면 둘이 겹쳐 돌 틈이 없다. 그 사이 예약은 대기로 남았다가 이 맥이 늦게 돌린다.
-/// 아무도 안 맡았을 때(처음 켠 맥)는 기다릴 옛 실행 맥이 없으니 바로다.
-pub(crate) const HANDOFF_MS: i64 = RUNNER_FRESH_MS + 60 * 1000;
+/// 옛 실행 맥은 다음 받기(2분마다) 전까지 자기가 실행 맥이라 믿고 **새로** 돌린다 — 못 받으면 마지막 받기 + `RUNNER_FRESH_MS` 에 멈춘다.
+/// 그리고 이미 시작한 실행은 끝까지 간다 — 최대 `RUN_TIMEOUT`(10분)(코덱스 개발 16 1차 P1: 6분만 기다리면 옛 맥의 긴 실행과 겹친다).
+/// 그래서 «둘 중 긴 쪽 + 여유 1분» = 11분. 그 사이 예약은 대기로 남았다가 이 맥이 늦게 돌린다. 처음 맡는 맥은 안 기다린다.
+/// 남는 틈: 옛 맥이 실행을 끝냈는데 그 기록을 서버에 못 올렸으면(네트워크가 갈렸다) 이 맥은 모르고 다시 돌린다 — 합의 없이는 못 막는다.
+pub(crate) const HANDOFF_MS: i64 = {
+    let run = crate::dispatch::RUN_TIMEOUT.as_millis() as i64;
+    (if run > RUNNER_FRESH_MS { run } else { RUNNER_FRESH_MS }) + 60 * 1000
+};
 
 /// 이 맥의 실행 맥 지정을 서버가 받았다 — «확인 전» 을 지우고, 넘겨받은 지정이면 기다림 끝 시각을 적는다.
 fn confirm_runner(conn: &Connection) -> rusqlite::Result<()> {
@@ -1195,6 +1199,11 @@ impl Syncer {
                 if name == RUNNER && !left {
                     let _ = confirm_runner(&conn);
                 }
+                // 보내는 사이 또 고쳤다(줄이 남았다) — 헬퍼 엔진은 저장에 성공한 이름을 보낼 목록에서 빼므로(애플 CKSyncEngine.State),
+                // 이미 알린 새 판도 같이 빠졌다. 처음부터 다시 알린다(코덱스 개발 16 P1 — iOS `RecordStore.sent` 는 이미 이렇게 한다).
+                if left {
+                    retry = true;
+                }
             }
         }
         for n in v.get("removed").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
@@ -1578,6 +1587,7 @@ mod tests {
         assert_eq!(may_run(&s.conn(), now, now).unwrap(), MayRun::Wait, "넘겨받은 직후엔 안 돌린다");
         let from = runner_from(&s.conn(), now).unwrap().expect("효력 시각");
         assert!(from - now >= RUNNER_FRESH_MS, "옛 실행 맥의 신선도보다 길게 기다린다");
+        assert!(from - now > crate::dispatch::RUN_TIMEOUT.as_millis() as i64, "옛 맥이 이미 시작한 실행이 끝날 때까지 기다린다");
         put_setting(&s.conn(), "sync_last_fetch", &(from + 1).to_string()).unwrap();
         assert_eq!(may_run(&s.conn(), now, from + 1).unwrap(), MayRun::Run, "기다림이 끝나면 돌린다");
         // 같은 맥이 다시 «이 맥으로» 를 눌러도 기다림을 지우지 않는다.

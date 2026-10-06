@@ -236,7 +236,19 @@ public final class RecordStore {
 
     /// iCloud 계정이 바뀌었거나 서버의 Ouro 데이터가 지워졌다 — 폰의 저장소는 그 계정의 거울이라 비운다
     /// (다른 계정에 옛 계정의 글을 올리지 않게, 코덱스 개발 11 P1). 새 계정으로 로그인하면 엔진이 처음부터 받는다.
-    public func forgetAccount() {
+    /// 비우기 전에 **아직 못 보낸 고침**을 옆 파일(`unsent-<시각>.json`)로 남긴다 — 서버에 없는 글이라 비우면 영영 사라진다
+    /// (코덱스 개발 16 P0). 돌려주는 값 = 남긴 수(못 남겼으면 비우지 않고 0 — 아래).
+    @discardableResult
+    public func forgetAccount() -> Int {
+        let kept: Int
+        do {
+            kept = try keepUnsent()
+        } catch {
+            // 남기지 못했으면 비우지 않는다 — 잃는 것보다 옛 계정의 글이 남는 쪽이 낫다. 쓰기는 막아 새 계정으로 올라가지 않게.
+            loadError = "못 보낸 일정을 따로 보관하지 못해 비우지 않았어요 — 저장 공간을 확인하고 앱을 다시 켜 주세요"
+            sync.error = loadError
+            return 0
+        }
         records = [:]
         saves = [:]
         deletes = [:]
@@ -252,6 +264,25 @@ public final class RecordStore {
             }
             onPersist?() // 메모리는 비었다 — 위젯도 옛 계정의 일정을 그만 보이게.
         }
+        return kept
+    }
+
+    /// 못 보낸 고침(보낼 저장·지우기)을 저장 파일 옆에 남긴다. 없으면 아무것도 안 쓰고 0. 메모리 저장소(테스트)는 세기만.
+    func keepUnsent() throws -> Int {
+        let unsent = saves.keys.filter { records[$0] != nil }
+        let n = unsent.count + deletes.count
+        guard n > 0, let url else { return n }
+        let d = Disk(
+            records: records.filter { saves[$0.key] != nil }, saves: saves, deletes: deletes, version: version)
+        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
+        let dest = url.deletingLastPathComponent().appendingPathComponent("unsent-\(stamp).json")
+        #if os(iOS)
+            let options: Data.WritingOptions = [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
+        #else
+            let options: Data.WritingOptions = [.atomic]
+        #endif
+        try JSONEncoder().encode(d).write(to: dest, options: options)
+        return n
     }
 
     /// 서버 암호 키가 초기화됨 — 시스템 칸을 버리고 가진 것을 전부 다시 올린다(맥과 같은 처리).

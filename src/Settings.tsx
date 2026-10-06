@@ -32,10 +32,13 @@ export default function Settings() {
 
   useEffect(() => {
     void appVersion().then(setVersion);
-    invoke<boolean>("update_auto").then(setAutoUpdate, () => {});
+    // 열 때 한 번 조용히 — 팝오버가 이미 찾은 새 버전이 여기서도 보이게(창마다 상태가 따로다).
+    // 자동 확인을 껐으면 묻지 않는다 — 설정값을 읽은 **뒤에** 정한다(코덱스 개발 16 1차 P2: 읽기 전에 물었다).
+    invoke<boolean>("update_auto").then((on) => {
+      setAutoUpdate(on);
+      if (on) update.checkQuietly();
+    }, () => {});
     loadBrief();
-    // 열 때 한 번 조용히 — 팝오버가 이미 찾은 새 버전이 여기서도 보이게(창마다 상태가 따로다). 자동 확인을 껐으면 안 묻는다.
-    update.checkQuietly();
     const tick = window.setInterval(() => setNow(Date.now()), 30_000);
     const offs: Array<() => void> = [];
     let dead = false;
