@@ -98,6 +98,9 @@ public final class LocalBridge: Outlet, @unchecked Sendable {
             case "signIn":
                 store.sync.account = "available"
                 store.sync.error = nil
+                // 로그인 전에 만든 것 — 엔진의 보낼 목록은 로그인 때 비워졌다(코덱스 개발 15).
+                let (s, d) = store.pendingRefs()
+                store.onPending?(s, d)
             case "signOut", "switchAccounts":
                 // 폰의 저장소는 그 계정의 거울 — 비우고, 새 계정이면 엔진이 처음부터 받는다(엔진 상태 파일은 헬퍼 코어가 지웠다).
                 store.forgetAccount()

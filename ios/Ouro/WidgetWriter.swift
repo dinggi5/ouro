@@ -46,8 +46,10 @@ final class WidgetWriter {
     static func build(_ store: RecordStore, now: Date) -> WidgetFeed {
         let answers = store.unreadAnswers()
         return WidgetFeed(
-            items: store.upcoming(from: now).map {
-                .init(id: $0.id, title: $0.title, allDay: $0.allDay, start: $0.start, end: $0.end, errand: $0.errand)
+            items: store.upcoming(from: now, days: 14, limit: 60).map {
+                .init(
+                    id: $0.id, title: $0.title, allDay: $0.allDay, startAt: $0.start, endAt: $0.end,
+                    startDay: $0.allDay ? Day.string($0.start) : nil, endDay: $0.allDay ? Day.string($0.end) : nil, errand: $0.errand)
             },
             answers: answers.prefix(3).map { .init(errand: $0.errand, title: $0.title, at: $0.finishedAt) },
             unread: answers.count)

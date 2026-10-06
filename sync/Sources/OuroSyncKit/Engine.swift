@@ -143,6 +143,9 @@ public actor SyncCore: CKSyncEngineDelegate {
             if m.account != "signIn" {
                 // 다른 계정의 받은 지점으로 이어 가면 안 된다.
                 try? FileManager.default.removeItem(at: stateURL)
+            } else {
+                // 로그인하면 엔진이 쌓아 둔 보낼 것을 비운다(애플 문서) — 존부터 다시. 레코드는 앱이 다시 알린다.
+                syncEngine.state.add(pendingDatabaseChanges: [.saveZone(CKRecordZone(zoneID: Wire.zoneID))])
             }
             out.send(m)
 

@@ -35,9 +35,9 @@ extension WidgetFeed {
         func at(_ hour: Int) -> Date { cal.date(bySettingHour: min(hour, 23), minute: 0, second: 0, of: now)! }
         return WidgetFeed(
             items: [
-                .init(id: "a", title: "치과", allDay: false, start: at(h + 1), end: at(h + 2), errand: false),
-                .init(id: "b", title: "회의 안건 초안", allDay: false, start: at(h + 3), end: at(h + 3), errand: true),
-                .init(id: "c", title: "팀 회의", allDay: false, start: at(h + 4), end: at(h + 5), errand: false),
+                .init(id: "a", title: "치과", allDay: false, startAt: at(h + 1), endAt: at(h + 2), errand: false),
+                .init(id: "b", title: "회의 안건 초안", allDay: false, startAt: at(h + 3), endAt: at(h + 3), errand: true),
+                .init(id: "c", title: "팀 회의", allDay: false, startAt: at(h + 4), endAt: at(h + 5), errand: false),
             ],
             answers: [.init(errand: "d", title: "어제 커밋 정리", at: now)], unread: 1)
     }

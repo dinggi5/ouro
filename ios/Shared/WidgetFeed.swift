@@ -10,10 +10,27 @@ struct WidgetFeed: Codable, Equatable {
         var id: String
         var title: String
         var allDay: Bool
-        var start: Date
-        /// 일정의 끝(종일이면 배타). 부탁은 `start` 와 같다 — 시각이 되면 «도는 중» 이라 다가오는 것에서 빠진다.
-        var end: Date
+        /// 시각 일정·부탁의 때. 부탁은 끝이 시작과 같다 — 시각이 되면 «도는 중» 이라 다가오는 것에서 빠진다.
+        var startAt: Date
+        var endAt: Date
+        /// 종일 일정은 날짜 글(`yyyy-MM-dd`, 끝은 배타) — 시각으로 적으면 다른 시간대로 옮겨 간 폰에서 하루 어긋난다(코덱스 개발 15).
+        var startDay: String?
+        var endDay: String?
+
         var errand: Bool
+
+        /// 지금 이 폰의 시간대로 읽은 시작·끝.
+        var start: Date { allDay ? startDay.flatMap(WidgetFeed.day) ?? startAt : startAt }
+        var end: Date { allDay ? endDay.flatMap(WidgetFeed.day) ?? endAt : endAt }
+    }
+
+    static func day(_ s: String) -> Date? {
+        let f = DateFormatter()
+        f.calendar = Calendar(identifier: .gregorian)
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = .current
+        f.dateFormat = "yyyy-MM-dd"
+        return f.date(from: s)
     }
 
     struct Answer: Codable, Equatable {
@@ -22,7 +39,8 @@ struct WidgetFeed: Codable, Equatable {
         var at: Date
     }
 
-    /// 다가오는 것(7일 안, 시작순).
+    /// 다가오는 것(14일 안, 60개까지, 시작순). 앱이 다시 쓰기 전까지 위젯은 이것만 가지고 있으니 넉넉히(코덱스 개발 15) —
+    /// 그래도 앱을 2주 넘게 안 켜고 동기화로도 안 깨어나면 비어 보일 수 있다.
     var items: [Item] = []
     /// 안 읽은 답 — 최근 것부터 몇 개만.
     var answers: [Answer] = []
@@ -43,8 +61,10 @@ struct WidgetFeed: Codable, Equatable {
     }
 
     /// `at` 에 보일 것 — 끝난 일정·시작한 부탁을 뺀다(피드는 만든 때 기준이라 타임라인의 뒤 칸에선 다시 거른다).
+    /// 시간대가 바뀌었으면 종일 일정의 자리도 바뀌니 다시 줄 세운다.
     func items(at now: Date) -> [Item] {
         items.filter { $0.errand ? $0.start >= now : ($0.end > now || $0.start >= now) }
+            .sorted { ($0.start, $0.allDay ? 0 : 1) < ($1.start, $1.allDay ? 0 : 1) }
     }
 
     /// 보이는 것이 바뀌는 때 — 각 일정의 끝·부탁의 시작·자정(«오늘/내일» 이 바뀐다). 타임라인 칸이 된다.

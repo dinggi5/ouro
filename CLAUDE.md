@@ -18,7 +18,7 @@
 - 날짜 파서(개발 14): 크레이트 `ouro-parse/` 하나를 맥(`src-tauri` 가 path 의존)과 iOS(`ffi` 기능 → `./scripts/build-parse.sh` 가 xcframework,
   스위프트 패키지 `ouro-parse/swift` = `OuroParse`)가 같이 쓴다. 파서를 스위프트로 옮겨 쓰지 않는다(파서 하나 원칙). xcframework 는 커밋하지 않는다 — `build-ios.sh` 가 먼저 만든다.
   iOS 빠른 추가 = 첫 화면 아래 입력칸 · 위젯 확장 `ios/Widgets`(컨트롤 버튼) · App Intents(`QuickAdd.swift`, Siri·단축어). 인텐트는 앱 프로세스에서 `AppModel.shared` 를 쓴다.
-- iOS 위젯(개발 15): 저장소는 옮기지 않았다 — 앱이 바뀔 때마다 앱 그룹 `group.com.dinggi5.ouro` 에 `widget.json`(다가오는 7일 · 안 읽은 답)을 쓰고(`WidgetWriter`), 위젯은 그것만 읽는다.
+- iOS 위젯(개발 15): 저장소는 옮기지 않았다 — 앱이 바뀔 때마다 앱 그룹 `group.com.dinggi5.ouro` 에 `widget.json`(다가오는 14일 · 안 읽은 답)을 쓰고(`WidgetWriter`), 위젯은 그것만 읽는다.
   모양(`WidgetFeed`)·색·엔소는 `ios/Shared` 를 앱·확장이 같이 컴파일. 누르면 `ouro://event|errand/<id>` 로 그 항목을 연다.
 - `src-tauri` 를 빌드·테스트하기 전에 `./scripts/build-sidecars.sh` (externalBin 이라 사이드카 파일이 없으면 `cargo test` 도 실패한다).
 - 불변 규칙: 바깥에서 들어온 글(.ics·AI 답)은 부탁 문장이 될 수 없다 / AI 가 만든 부탁은 사람 승인 전엔 안 돈다 / 바깥으로 나간 원문은 저장한다.

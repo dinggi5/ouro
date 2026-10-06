@@ -301,8 +301,10 @@ fn enqueue_save(conn: &Connection, key: &str, tbl: &str, rid: Option<i64>) -> ru
 /// 동기화를 처음 켤 때(또는 서버 데이터가 초기화됐을 때) 가진 것을 전부 보낼 목록에.
 fn enqueue_all(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute("UPDATE sync_flags SET v = v + 1 WHERE k = 'seq'", [])?;
-    // 이때 올리는 것은 «고친 것» 이 아니라 «가진 것 전부» 다 — 서버 삭제가 와도 되살리지 않게 때를 적어 둔다(`apply_delete`).
-    put_setting(conn, "sync_all_at", &now_ms().to_string())?;
+    // 이때 올리는 것은 «고친 것» 이 아니라 «가진 것 전부» 다 — 서버 삭제가 와도 되살리지 않게 그 차례를 적어 둔다(`apply_delete`).
+    // 벽시계가 아니라 차례(seq): 켠 뒤 시계를 뒤로 돌리면 그 뒤의 고침이 «켜기 전» 으로 보여 지워졌다(코덱스 개발 15 P0).
+    let seq: i64 = conn.query_row("SELECT v FROM sync_flags WHERE k = 'seq'", [], |r| r.get(0))?;
+    put_setting(conn, "sync_all_seq", &seq.to_string())?;
     for s in TABLES {
         conn.execute(
             &format!(
@@ -622,7 +624,8 @@ fn undo_losing_approval(conn: &Connection, ty: &str, local: &Map<String, Value>,
 /// 서버엔 다시 올린다(다른 기기가 그 실행을 아직 못 받았을 수 있다).
 /// 아직 못 보낸 이 기기의 고침이 있는 일정·부탁도 같다 — 오래 꺼져 있던 기기에서 고친 것이 그 사이 비운 휴지통에 조용히 지워지지 않게
 /// 되살려 올린다(코덱스 개발 14 P0). 잃는 것보다 한 번 더 지우게 하는 게 낫다.
-/// 단, 동기화를 (다시) 켜며 «전부» 올린 것은 고침이 아니다 — 그 뒤에 고친 것만(`sync_all_at`, 코덱스 개발 14 2차).
+/// 단, 동기화를 (다시) 켜며 «전부» 올린 것은 고침이 아니다 — 그 뒤에 고친 것만(`sync_all_seq`, 코덱스 개발 14 2차 · 개발 15 P0).
+/// 옛 설치(차례를 안 적었던 판)는 0 — 보낼 것이 있으면 전부 되살린다(잃는 쪽보다 낫다).
 fn apply_delete(conn: &Connection, ty: &str, name: &str) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM sync_inbox WHERE name = ?1", [name])?;
     conn.execute("DELETE FROM sync_meta WHERE name = ?1", [name])?;
@@ -636,11 +639,10 @@ fn apply_delete(conn: &Connection, ty: &str, name: &str) -> rusqlite::Result<()>
     };
     let key = format!("{}:{id}", s.table);
     if s.ty == "Item" {
-        let all_at = setting(conn, "sync_all_at")?.and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+        let all_seq = setting(conn, "sync_all_seq")?.and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
         let edited: bool = conn.query_row(
-            "SELECT EXISTS (SELECT 1 FROM sync_outbox o JOIN items i ON i.id = ?2
-                            WHERE o.key = ?1 AND o.op = 'save' AND i.updated_at > ?3)",
-            params![&key, id, all_at],
+            "SELECT EXISTS (SELECT 1 FROM sync_outbox WHERE key = ?1 AND op = 'save' AND seq > ?2)",
+            params![&key, all_seq],
             |r| r.get(0),
         )?;
         if edited {
@@ -1097,6 +1099,9 @@ impl Syncer {
                 let a = v.get("account").and_then(Value::as_str).unwrap_or_default();
                 if a == "signOut" || a == "switchAccounts" {
                     self.turn_off_because("iCloud 계정이 바뀌어 동기화를 껐어요");
+                } else if a == "signIn" {
+                    // CloudKit 은 로그인할 때 엔진의 보낼 목록을 비운다 — 못 보낸 것을 처음부터 다시 알린다(코덱스 개발 15).
+                    *lock(&self.inner.announced) = 0;
                 }
             }
             "zone_gone" => {
@@ -1501,11 +1506,21 @@ mod tests {
         drain(&a);
         let old_uid = uid_of(&a, "items", old.id);
         set_on(&a, false).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(2));
         set_on(&a, true).unwrap();
         assert!(outbox_since(&a.conn(), 0).unwrap().iter().any(|p| p.name == old_uid && p.save), "다시 켜면 전부 올린다");
         apply(&a, &[], &[("Item".into(), old_uid)]).unwrap();
         assert!(a.get_event(old.id).unwrap().is_none(), "고친 적 없는 옛 일정은 되살리지 않는다");
+
+        // 켠 뒤 시계를 뒤로 돌리고 고쳐도 «고침» 이다 — 판(updated_at)이 켠 때보다 작아도(코덱스 개발 15 P0).
+        let back = a.create_event(&event("시계 뒤", 1_800_000_000_000)).unwrap();
+        drain(&a);
+        let back_uid = uid_of(&a, "items", back.id);
+        set_on(&a, false).unwrap();
+        set_on(&a, true).unwrap();
+        a.update_event(back.id, &event("시계 뒤 — 고침", 1_800_000_000_000)).unwrap();
+        a.conn().execute("UPDATE items SET updated_at = 1 WHERE id = ?1", [back.id]).unwrap();
+        apply(&a, &[], &[("Item".into(), back_uid)]).unwrap();
+        assert_eq!(a.get_event(back.id).unwrap().map(|e| e.title), Some("시계 뒤 — 고침".into()), "켠 뒤의 고침은 남는다");
     }
 
     #[test]
