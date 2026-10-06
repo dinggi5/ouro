@@ -402,3 +402,30 @@ let fixtures = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appen
     try s.createEvent(e)
     #expect(n == 1)
 }
+
+/// 받은 묶음을 디스크에 못 적어도 엔진이 멈추지 않는다 — 적힐 때까지 다시 적고, 적히면 오류를 걷는다(개발 16).
+@Test @MainActor func fetchedBatchIsRetriedUntilWritten() async throws {
+    let a = RecordStore(url: nil)
+    var d = EventDraft()
+    d.title = "치과"
+    let name = try a.createEvent(d)
+    let (recs, _) = a.provide([name])
+
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ouro-retry-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let blocker = dir.appendingPathComponent("store")
+    try Data().write(to: blocker) // 폴더 자리에 파일 — 쓰기가 실패한다.
+    let b = RecordStore(url: blocker.appendingPathComponent("records.json"))
+
+    let done = Task { @MainActor in
+        await LocalBridge.applyUntilWritten(b, recs, [], delays: [.milliseconds(20)])
+    }
+    try await Task.sleep(for: .milliseconds(80))
+    #expect(b.sync.error != nil, "못 적은 동안은 오류를 보인다")
+    #expect(b.records[name] == nil, "실패한 적기는 메모리도 되돌린다")
+    try FileManager.default.removeItem(at: blocker)
+    await done.value
+    #expect(b.records[name] != nil)
+    #expect(b.sync.error == nil)
+    try? FileManager.default.removeItem(at: dir)
+}

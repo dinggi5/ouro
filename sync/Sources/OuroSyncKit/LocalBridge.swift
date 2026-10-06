@@ -56,6 +56,26 @@ public final class LocalBridge: Outlet, @unchecked Sendable {
         Task { @MainActor in await self.handle(msg) }
     }
 
+    /// 받은 묶음을 적힐 때까지 다시 적는다(2초 → 1분까지 늘림). 적히면 실패 때 띄운 오류를 걷는다.
+    @MainActor
+    static func applyUntilWritten(
+        _ store: RecordStore, _ records: [WireRecord], _ deleted: [RecordRef],
+        delays: [Duration] = [.seconds(2), .seconds(5), .seconds(15), .seconds(30), .seconds(60)]
+    ) async {
+        var attempt = 0
+        while true {
+            do {
+                try store.apply(records, deleted: deleted)
+                if attempt > 0 { store.sync.error = nil }
+                return
+            } catch {
+                store.sync.error = error.localizedDescription
+            }
+            try? await Task.sleep(for: delays[min(attempt, delays.count - 1)])
+            attempt += 1
+        }
+    }
+
     static func accountProblem(_ a: String?) -> String? {
         switch a {
         case "available": nil
@@ -78,14 +98,12 @@ public final class LocalBridge: Outlet, @unchecked Sendable {
             m.missing = missing
             await core?.receive(m)
         case "fetched":
-            do {
-                try store.apply(msg.records ?? [], deleted: msg.deleted ?? [])
-                await core?.receive(Inbound(op: "ack", id: msg.id))
-            } catch {
-                // 디스크에 못 적었으면 ack 하지 않는다 — 엔진이 «여기까지 받음» 을 저장하지 못하게 멈춰 두고,
-                // 다시 켜면 같은 변경을 다시 받는다(맥이 헬퍼를 내리는 것과 같은 효과, 코덱스 개발 11 P0).
-                store.sync.error = error.localizedDescription
-            }
+            // 디스크에 적은 뒤에만 ack — 그전엔 엔진이 «여기까지 받음» 을 저장하지 못한다(코덱스 개발 11 P0).
+            // 못 적으면 잠시 뒤 같은 묶음을 다시 적는다(개발 16, 코덱스 개발 13~15 P1): 예전엔 ack 를 영영 안 보내
+            // 엔진이 이 묶음에서 멈췄고, 앱을 다시 켤 때까지 받기·보내기가 조용히 서 있었다.
+            // `apply` 는 실패하면 메모리를 되돌리므로 다시 적어도 두 번 합쳐지지 않는다. 앱이 그사이 꺼지면 다음에 같은 변경을 다시 받는다.
+            await Self.applyUntilWritten(store, msg.records ?? [], msg.deleted ?? [])
+            await core?.receive(Inbound(op: "ack", id: msg.id))
         case "sent":
             store.sent(saved: msg.saved ?? [], removed: msg.removed ?? [], failed: msg.failed ?? [])
         case "synced":

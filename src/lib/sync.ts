@@ -15,6 +15,8 @@ export type SyncStatus = {
   pending: number;
   runnerName: string | null;
   runnerIsMe: boolean;
+  /** 이 맥이 넘겨받는 중이면 돌리기 시작하는 시각(ms). */
+  runnerFrom: number | null;
   thisName: string;
 };
 

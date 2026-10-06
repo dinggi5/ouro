@@ -12,6 +12,8 @@ import { errorText } from "./lib/events";
 import { useSync } from "./lib/sync";
 import { appVersion, useUpdate } from "./lib/update";
 
+const timeText = (ms: number) => new Date(ms).toLocaleTimeString("ko-KR", { hour: "numeric", minute: "2-digit" });
+
 /** 00:00~23:30, 30분 단위(러스트 `brief::valid_at`). */
 const TIMES = Array.from({ length: 48 }, (_, i) => i * 30);
 
@@ -83,7 +85,7 @@ export default function Settings() {
           {s.on && (
             <Row
               label="실행 맥"
-              sub={s.runnerIsMe ? "이 맥" : (s.runnerName ?? "없음")}
+              sub={s.runnerIsMe ? (s.runnerFrom ? `이 맥 · ${timeText(s.runnerFrom)}부터` : "이 맥") : (s.runnerName ?? "없음")}
               control={
                 !s.runnerIsMe && (
                   <TextButton disabled={sync.busy} onClick={sync.makeRunner}>

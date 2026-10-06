@@ -254,13 +254,34 @@ fn set_flag(conn: &Connection, k: &str, v: i64) -> rusqlite::Result<()> {
 /// (받기는 2분마다). 오프라인이라 못 받는 맥은 예약 부탁을 멈춘다 — 어차피 그 맥은 Claude 에도 못 닿는다(코덱스 개발 10).
 pub(crate) const RUNNER_FRESH_MS: i64 = 5 * 60 * 1000;
 
+/// 다른 맥에게서 실행 맥을 넘겨받았을 때, 서버가 받은 뒤에도 이만큼 기다렸다 돌린다(개발 16, 코덱스 개발 10~15 P1).
+/// 옛 실행 맥은 다음 받기(2분마다) 전까지 자기가 실행 맥이라 믿고 돌린다 — 못 받으면 마지막 받기 + `RUNNER_FRESH_MS` 에 스스로 멈춘다.
+/// 그러니 서버에 올라간 뒤 «신선도 + 여유 1분» 을 기다리면 둘이 겹쳐 돌 틈이 없다. 그 사이 예약은 대기로 남았다가 이 맥이 늦게 돌린다.
+/// 아무도 안 맡았을 때(처음 켠 맥)는 기다릴 옛 실행 맥이 없으니 바로다.
+pub(crate) const HANDOFF_MS: i64 = RUNNER_FRESH_MS + 60 * 1000;
+
+/// 이 맥의 실행 맥 지정을 서버가 받았다 — «확인 전» 을 지우고, 넘겨받은 지정이면 기다림 끝 시각을 적는다.
+fn confirm_runner(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM settings WHERE key = 'sync_runner_unconfirmed'", [])?;
+    if setting(conn, "sync_runner_handoff")?.is_some() {
+        put_setting(conn, "sync_runner_from", &(now_ms() + HANDOFF_MS).to_string())?;
+        conn.execute("DELETE FROM settings WHERE key = 'sync_runner_handoff'", [])?;
+    }
+    Ok(())
+}
+
+/// 넘겨받은 지정이 아직 효력 전이면 그 시각(이 맥이 실행 맥일 때만 뜻이 있다).
+fn runner_from(conn: &Connection, now: i64) -> rusqlite::Result<Option<i64>> {
+    Ok(setting(conn, "sync_runner_from")?.and_then(|v| v.parse::<i64>().ok()).filter(|t| *t > now))
+}
+
 /// 이 맥이 실행 맥인가(동기화가 켜져 있을 때의 지정만 본다).
 pub(crate) fn is_runner(conn: &Connection) -> rusqlite::Result<bool> {
     Ok(setting(conn, "sync_runner")?.is_some_and(|r| r == device_id(conn).unwrap_or_default()))
 }
 
 /// 이 맥이 `start_at` 의 예약 부탁을 지금 돌려도 되나(`claim_run` 이 같은 트랜잭션에서 묻는다).
-///   · 동기화가 켜져 있으면: 실행 맥이고, 그 지정이 서버에 올라갔고(넘겨받기는 서버가 받은 뒤에야 효력), 최근 받기가 성공했을 때만.
+///   · 동기화가 켜져 있으면: 실행 맥이고, 그 지정이 서버에 올라갔고(넘겨받기는 서버가 받은 뒤 `HANDOFF_MS` 가 지나야 효력), 최근 받기가 성공했을 때만.
 ///     아직 아무도 안 맡았으면 아무도 안 돌린다(첫 받기가 끝나면 누군가 맡는다).
 ///   · 꺼져 있으면 돌린다(혼자 쓰는 맥). 단 **실행 맥이 아닌 채로 껐다면** 끈 때보다 앞선 부탁은 돌리지 않는다 —
 ///     그건 실행 맥이 돌렸을 수 있고, 그 답을 이 맥이 아직 못 받았을 수 있다(계정이 바뀌어 저절로 꺼진 때도 같다).
@@ -269,7 +290,7 @@ pub(crate) fn may_run(conn: &Connection, start_at: i64, now: i64) -> rusqlite::R
         let off_at = setting(conn, "sync_off_at")?.and_then(|v| v.parse::<i64>().ok());
         return Ok(if off_at.is_some_and(|t| start_at < t) { MayRun::HandedOff } else { MayRun::Run });
     }
-    if !is_runner(conn)? || setting(conn, "sync_runner_unconfirmed")?.is_some() {
+    if !is_runner(conn)? || setting(conn, "sync_runner_unconfirmed")?.is_some() || runner_from(conn, now)?.is_some() {
         return Ok(MayRun::Wait);
     }
     let last = setting(conn, "sync_last_fetch")?.and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
@@ -583,7 +604,11 @@ fn apply_one(conn: &Connection, rec: &Record) -> Result<Applied, String> {
         // 서버 판이 그대로 이겼다 — 이 기기의 보내지 못한 옛 변경은 진 것이다.
         conn.execute("DELETE FROM sync_outbox WHERE key = ?1", [&key]).map_err(|e| e.to_string())?;
         if rec.ty == CONFIG_TYPE {
-            conn.execute("DELETE FROM settings WHERE key = 'sync_runner_unconfirmed'", []).map_err(|e| e.to_string())?;
+            if is_runner(conn).map_err(|e| e.to_string())? {
+                confirm_runner(conn).map_err(|e| e.to_string())?;
+            } else {
+                conn.execute("DELETE FROM settings WHERE key = 'sync_runner_unconfirmed'", []).map_err(|e| e.to_string())?;
+            }
         }
     } else {
         let (tbl, rid) = key.split_once(':').map(|(t, r)| (t.to_string(), r.parse::<i64>().ok())).unwrap_or_default();
@@ -759,6 +784,14 @@ pub(crate) fn claim_runner(store: &Store, name: &str, only_if_none: bool) -> Res
         return Ok(false);
     }
     let me = device_id(&conn).map_err(|e| e.to_string())?;
+    // 다른 맥이 맡고 있던 걸 가져온다 → 서버가 받은 뒤에도 `HANDOFF_MS` 를 기다린다(옛 실행 맥이 알아챌 때까지).
+    let taking_over = cur.as_deref().is_some_and(|c| !c.is_empty() && c != me);
+    let keep_wait = cur.as_deref() == Some(me.as_str()) && setting(&conn, "sync_runner_from").map_err(|e| e.to_string())?.is_some();
+    if taking_over {
+        put_setting(&conn, "sync_runner_handoff", "1").map_err(|e| e.to_string())?;
+    } else if !keep_wait {
+        conn.execute("DELETE FROM settings WHERE key IN ('sync_runner_handoff', 'sync_runner_from')", []).map_err(|e| e.to_string())?;
+    }
     put_setting(&conn, "sync_runner", &me).map_err(|e| e.to_string())?;
     put_setting(&conn, "sync_runner_name", name).map_err(|e| e.to_string())?;
     put_setting(&conn, "sync_runner_at", &now_ms().to_string()).map_err(|e| e.to_string())?;
@@ -790,6 +823,8 @@ pub(crate) struct SyncStatus {
     pub pending: i64,
     pub runner_name: Option<String>,
     pub runner_is_me: bool,
+    /// 이 맥이 넘겨받는 중이면 돌리기 시작하는 시각(ms) — «이 맥 · 오후 3:12부터».
+    pub runner_from: Option<i64>,
     pub this_name: String,
 }
 
@@ -1158,7 +1193,7 @@ impl Syncer {
                     .query_row("SELECT EXISTS (SELECT 1 FROM sync_outbox WHERE key = ?1)", [&key], |r| r.get(0))
                     .unwrap_or(true);
                 if name == RUNNER && !left {
-                    let _ = conn.execute("DELETE FROM settings WHERE key = 'sync_runner_unconfirmed'", []);
+                    let _ = confirm_runner(&conn);
                 }
             }
         }
@@ -1216,6 +1251,7 @@ impl Syncer {
         let runner = setting(&conn, "sync_runner").ok().flatten().filter(|r| !r.is_empty());
         let me = device_id(&conn).unwrap_or_default();
         let runner_name = setting(&conn, "sync_runner_name").ok().flatten();
+        let from = runner_from(&conn, now_ms()).ok().flatten();
         drop(conn);
         let changed = {
             let mut s = lock(&self.inner.status);
@@ -1224,6 +1260,7 @@ impl Syncer {
             s.on = on;
             s.pending = pending;
             s.runner_is_me = runner.as_deref() == Some(me.as_str());
+            s.runner_from = from.filter(|_| s.runner_is_me);
             s.runner_name = runner.and(runner_name);
             s.this_name = self.inner.this_name.clone();
             *s != before
@@ -1521,6 +1558,38 @@ mod tests {
         a.conn().execute("UPDATE items SET updated_at = 1 WHERE id = ?1", [back.id]).unwrap();
         apply(&a, &[], &[("Item".into(), back_uid)]).unwrap();
         assert_eq!(a.get_event(back.id).unwrap().map(|e| e.title), Some("시계 뒤 — 고침".into()), "켠 뒤의 고침은 남는다");
+    }
+
+    #[test]
+    fn taking_over_runner_waits_for_old_runner_to_notice() {
+        let s = Store::open_in_memory();
+        set_on(&s, true).unwrap();
+        // 다른 맥이 맡고 있다.
+        let mut cfg = Map::new();
+        cfg.insert("device".into(), "other-mac".into());
+        cfg.insert("name".into(), "다른 맥".into());
+        cfg.insert("at".into(), now_ms().into());
+        apply(&s, &[split(CONFIG_TYPE, RUNNER, cfg, None)], &[]).unwrap();
+        assert!(claim_runner(&s, "이 맥", false).unwrap());
+        put_setting(&s.conn(), "sync_last_fetch", &now_ms().to_string()).unwrap();
+        // 서버가 받았다 — 그래도 옛 실행 맥이 알아챌 때까지는 대기.
+        confirm_runner(&s.conn()).unwrap();
+        let now = now_ms();
+        assert_eq!(may_run(&s.conn(), now, now).unwrap(), MayRun::Wait, "넘겨받은 직후엔 안 돌린다");
+        let from = runner_from(&s.conn(), now).unwrap().expect("효력 시각");
+        assert!(from - now >= RUNNER_FRESH_MS, "옛 실행 맥의 신선도보다 길게 기다린다");
+        put_setting(&s.conn(), "sync_last_fetch", &(from + 1).to_string()).unwrap();
+        assert_eq!(may_run(&s.conn(), now, from + 1).unwrap(), MayRun::Run, "기다림이 끝나면 돌린다");
+        // 같은 맥이 다시 «이 맥으로» 를 눌러도 기다림을 지우지 않는다.
+        assert!(claim_runner(&s, "이 맥", false).unwrap());
+        assert!(runner_from(&s.conn(), now).unwrap().is_some());
+        // 아무도 안 맡았을 때 처음 맡는 건 기다리지 않는다.
+        let t = Store::open_in_memory();
+        set_on(&t, true).unwrap();
+        assert!(claim_runner(&t, "이 맥", true).unwrap());
+        confirm_runner(&t.conn()).unwrap();
+        put_setting(&t.conn(), "sync_last_fetch", &now_ms().to_string()).unwrap();
+        assert_eq!(may_run(&t.conn(), now, now_ms()).unwrap(), MayRun::Run);
     }
 
     #[test]
