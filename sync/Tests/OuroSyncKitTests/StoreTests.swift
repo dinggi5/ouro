@@ -448,3 +448,22 @@ let fixtures = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appen
     #expect(b.sync.error == nil)
     try? FileManager.default.removeItem(at: dir)
 }
+
+/// 옆으로 옮기지 못해도 비우기는 한다 — 옛 계정의 글이 새 계정으로 올라가면 안 된다(코덱스 개발 16 2차).
+@Test @MainActor func accountChangeEmptiesEvenIfKeepingFails() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ouro-unsent-ro-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
+        try? FileManager.default.removeItem(at: dir)
+    }
+    let s = RecordStore(url: dir.appendingPathComponent("records.json"))
+    var d = EventDraft()
+    d.title = "옛 계정의 못 보낸 것"
+    try s.createEvent(d)
+    try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: dir.path) // 옮기기·쓰기 막힘
+    #expect(s.forgetAccount() == 0)
+    #expect(s.records.isEmpty)
+    #expect(s.pendingRefs().0.isEmpty, "보낼 목록에 옛 계정의 글이 남지 않는다")
+    #expect(s.sync.error != nil)
+}

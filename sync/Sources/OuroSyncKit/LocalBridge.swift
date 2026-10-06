@@ -125,7 +125,7 @@ public final class LocalBridge: Outlet, @unchecked Sendable {
                 store.sync.lastSync = nil
                 // 계정 상태도 바꾼다 — 안 그러면 뒤이은 «synced» 가 «available» 검사를 통과해 이 경고를 지운다(코덱스 개발 16 P2).
                 store.sync.account = msg.account == "signOut" ? "noAccount" : nil
-                if store.loadError == nil {
+                if store.loadError == nil, store.sync.error?.hasPrefix("못 보낸") != true {
                     let note = kept > 0 ? " · 못 보낸 \(kept)개는 기기에 따로 보관했어요" : ""
                     store.sync.error = (msg.account == "signOut" ? "iCloud 에서 로그아웃돼 일정을 비웠어요" : "iCloud 계정이 바뀌어 새로 받아요") + note
                 }
@@ -137,7 +137,7 @@ public final class LocalBridge: Outlet, @unchecked Sendable {
                 store.reuploadAll()
             } else {
                 let kept = store.forgetAccount()
-                if store.loadError == nil {
+                if store.loadError == nil, store.sync.error?.hasPrefix("못 보낸") != true {
                     store.sync.error = "iCloud 에서 Ouro 데이터가 지워졌어요" + (kept > 0 ? " · 못 보낸 \(kept)개는 기기에 따로 보관했어요" : "")
                 }
             }
