@@ -11,6 +11,7 @@
 - iCloud 동기화(개발 10): CloudKit 은 헬퍼 앱 `sync/`(OuroSync.app, Swift 패키지 OuroSyncKit — iOS 와 공용)가 맡고 앱(`src-tauri/src/sync.rs`)과 표준입출력 JSON 줄로만 말한다.
   헬퍼도 DB 를 안 연다. 바뀐 줄은 스키마 9 트리거가 `sync_outbox` 에 적는다. 동기화 중 예약 부탁은 «실행 맥» 한 대만 돌린다.
   헬퍼 개발 빌드 `./scripts/build-sync-helper.sh`(Xcode 자동 서명, 컨테이너 `iCloud.com.dinggi5.ouro`) → 디버그 앱·테스트에 `OURO_SYNC_HELPER=<경로>`.
+  배포본(개발 16)은 `--release`(Developer ID export · 운영 CloudKit) → `src-tauri/helpers/` → `Contents/Helpers/`. 실행 맥을 넘겨받으면 `HANDOFF_MS` 기다린다.
   🔴 CloudKit 은 변경을 만든 **기기**에 그 변경을 다시 주지 않는다 — 같은 맥의 두 프로세스로는 «이어 받기» 를 검증할 수 없다.
 - iOS 앱(개발 11): `ios/`(SwiftUI, xcodegen, 번들 id `com.dinggi5.ouro.ios`). 헬퍼 없이 같은 `SyncCore` 를 프로세스 안에서(`LocalBridge`), 저장소는 `RecordStore`(레코드 그대로 JSON 한 파일).
   폰은 부탁을 돌리지 않는다. 레코드 칸·합치기·검사의 정본은 맥(`sync.rs`·`store.rs`·`errands.rs`) — 바꾸면 `sync/Sources/OuroSyncKit/Schema.swift`·`Calendar.swift` 도.
@@ -20,12 +21,14 @@
   iOS 빠른 추가 = 첫 화면 아래 입력칸 · 위젯 확장 `ios/Widgets`(컨트롤 버튼) · App Intents(`QuickAdd.swift`, Siri·단축어). 인텐트는 앱 프로세스에서 `AppModel.shared` 를 쓴다.
 - iOS 위젯(개발 15): 저장소는 옮기지 않았다 — 앱이 바뀔 때마다 앱 그룹 `group.com.dinggi5.ouro` 에 `widget.json`(다가오는 14일 · 안 읽은 답)을 쓰고(`WidgetWriter`), 위젯은 그것만 읽는다.
   모양(`WidgetFeed`)·색·엔소는 `ios/Shared` 를 앱·확장이 같이 컴파일. 누르면 `ouro://event|errand/<id>` 로 그 항목을 연다.
+- 설정 창(개발 16): 창 이름 `settings`(`settings.rs` · `src/Settings.tsx`) — 동기화·실행 맥·아침 브리핑 시각·자동 업데이트 확인·버전. 메뉴바 메뉴는 열기·크게 보기·설정·종료.
+  색은 미색 흰 바탕(키나리 아님 — 사장 «오줌색 말고»). UI 는 설명 문구 없이 미니멀.
 - `src-tauri` 를 빌드·테스트하기 전에 `./scripts/build-sidecars.sh` (externalBin 이라 사이드카 파일이 없으면 `cargo test` 도 실패한다).
 - 불변 규칙: 바깥에서 들어온 글(.ics·AI 답)은 부탁 문장이 될 수 없다 / AI 가 만든 부탁은 사람 승인 전엔 안 돈다 / 바깥으로 나간 원문은 저장한다.
 - 날짜 계산은 LLM 이 아니라 결정적 파서가 한다.
 - 원격: `backup` = 비공개 `dinggi5/ouro-dev`(`DEVLOG.md` 포함, 세션 끝에 `git push backup main`). `origin` 이라는 이름은 쓰지 않는다(사이드바 묶음 이름이 바뀐다).
   `public` = 공개 `dinggi5/ouro`(개발 8 부터) — `scripts/publish-public.sh` 가 일지를 이력에서 걸러 올린다. 커밋 해시가 달라서 `git fetch public` 은 `--no-tags` 로.
-- 배포: 버전 여섯 곳 + `docs/release-notes/vX.Y.Z.md` → main 머지·`git push backup main` → 메인 체크아웃에서 `./scripts/release.sh --publish`(`docs/RELEASE.md`).
-  업데이트 서명 키 `~/.tauri/ouro-updater.key` 는 잃으면 기존 사용자가 영영 업데이트를 못 받는다.
+- 배포: 버전 여섯 곳(+ `sync/project.yml`·`ios/project.yml`) + `docs/release-notes/vX.Y.Z.md` → main 머지·`git push backup main` → 메인 체크아웃에서 `./scripts/release.sh --publish`(`docs/RELEASE.md`).
+  iOS 는 `./scripts/upload-ios.sh [--upload]`(TestFlight). 업데이트 서명 키 `~/.tauri/ouro-updater.key` 는 잃으면 기존 사용자가 영영 업데이트를 못 받는다.
 - 최소 macOS 26 의 정본은 `src-tauri/Info.plist`(LSMinimumSystemVersion). `tauri.conf.json` 의 minimumSystemVersion 은 **일부러 11.0** —
   Xcode 27 링커가 배포 타깃 26 으로 만든 proc-macro dylib 을 dyld 가 거부한다(Info.plist 주석).

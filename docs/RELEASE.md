@@ -29,6 +29,7 @@
 ```bash
 # 1. 버전을 여섯 곳에서 올린다 (사전 점검이 불일치를 잡는다)
 #    src-tauri/tauri.conf.json / package.json / package-lock.json / src-tauri/Cargo.toml / ouro-mcp/Cargo.toml / mcpb/manifest.json
+#    + sync/project.yml(헬퍼) · ios/project.yml 둘(앱·위젯) 의 CFBundleShortVersionString — 사전 점검이 같이 본다(개발 16)
 #    (package.json·lock 은 `npm version X.Y.Z --no-git-tag-version`, Cargo.lock 은 `cargo update -p ouro --offline` 로 따라온다)
 # 2. 릴리스 노트 — docs/release-notes/vX.Y.Z.md (앱의 업데이트 카드와 릴리스 페이지에 그대로 뜬다)
 # 3. 커밋 → main 에 ff 머지 → git push backup main
@@ -52,10 +53,21 @@ curl -sL https://github.com/dinggi5/ouro/releases/latest/download/latest.json | 
 - 유니버설(인텔) 빌드 배포 — 캐스크가 `_aarch64.dmg`·`arch: :arm64` 로 고정돼 있어 `--publish --universal` 은 막혀 있다.
 - 재현 가능 빌드 — 같은 커밋도 서명 타임스탬프·공증 티켓 때문에 바이트가 다르다.
 - `.mcpb` 서명 — mcpb 2.1.2 의 서명본을 Claude 가 거부하는 버그(modelcontextprotocol/mcpb#278). 릴리스 본문에 sha256 만 싣는다.
-- **동기화 헬퍼(OuroSync.app)를 배포본에 넣기** (개발 10 에서 미룸). 지금 배포본엔 헬퍼가 없어 «iCloud 동기화…» 메뉴가 안 보인다. 넣으려면:
-  ① `com.dinggi5.ouro.sync` 의 **Developer ID 프로비저닝 프로파일**(iCloud·CloudKit 켬, 컨테이너 `iCloud.com.dinggi5.ouro`) —
-  Xcode 자동 서명(`xcodebuild archive` + `-exportArchive` method `developer-id`, `-allowProvisioningUpdates`)이 만들 수 있다.
-  ② 엔타이틀먼트에 `com.apple.developer.icloud-container-environment = Production`, `aps-environment = production`.
-  ③ **CloudKit 운영 환경에 스키마 배포** — CloudKit Console(icloud.developer.apple.com) «Deploy Schema Changes». 개발 환경 스키마는
-  레코드를 처음 저장할 때 저절로 생겼다(Item·Run·Config…). 사람이 콘솔에서 누른다.
-  ④ `Ouro.app/Contents/Helpers/OuroSync.app` 로 복사(Tauri `bundle.macOS.files`), 헬퍼를 먼저 자기 엔타이틀먼트로 서명한 뒤 본체 서명 — `release.sh` 의 서명 검사에 헬퍼 추가.
+
+## 동기화 헬퍼 (개발 16)
+
+`release.sh` 가 컴파일 전에 `./scripts/build-sync-helper.sh --release` 를 부른다: archive → **Developer ID export**
+(`iCloudContainerEnvironment=Production`, 프로파일이 `aps-environment=production`) → `src-tauri/helpers/OuroSync.app`(gitignore) →
+`bundle.macOS.files` 가 `Ouro.app/Contents/Helpers/` 로 넣는다. 번들러는 이 헬퍼를 다시 서명하지 않는다. «동기화 헬퍼 검증» 단계가
+팀·번들 ID·Developer ID·타임스탬프·하드닝·운영 엔타이틀먼트·프로파일·버전을 본다 — 🔴 운영이 아니면 사용자 일정이 개발 CloudKit DB 로 간다.
+
+- **CloudKit 운영 스키마는 사람이 배포한다** — CloudKit Console(icloud.developer.apple.com) → `iCloud.com.dinggi5.ouro` →
+  «Deploy Schema Changes…» (개발 → 운영). 레코드 종류가 늘 때마다(새 칸 포함) 다시. 안 하면 운영에서 저장이 «알 수 없는 종류» 로 실패한다.
+
+## iOS (개발 16)
+
+`./scripts/upload-ios.sh` = archive → App Store Connect export(.ipa), `--upload` 면 TestFlight 로. 빌드 번호는 시각(분).
+- 처음 한 번(사람): App Store Connect 에 앱 레코드(번들 id `com.dinggi5.ouro.ios`) 만들기.
+- 프로비저닝(App ID 둘 `.ios`·`.ios.widgets` · App Group `group.com.dinggi5.ouro` · 배포 프로파일)은 `-allowProvisioningUpdates` 가 만든다 —
+  **Xcode → 설정 → 계정에 Apple ID 가 로그인돼 있어야 한다**. 개발 16 실측: 키체인의 Xcode 계정이 깨져(«No Accounts») 실패했고,
+  release.env 의 API 키로는 «Authentication failed» — 공증용 키라 프로파일을 만들 권한(Admin)이 없는 것으로 보인다.

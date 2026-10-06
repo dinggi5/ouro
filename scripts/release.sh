@@ -461,6 +461,13 @@ print(v1 if v1==v2 else f"{v1}!={v2}")')"
 [[ "$VERSION_CONF" == "$VERSION_PKG" && "$VERSION_CONF" == "$VERSION_CARGO" && "$VERSION_CONF" == "$VERSION_MCP" && "$VERSION_CONF" == "$VERSION_MCPB" && "$VERSION_CONF" == "$VERSION_LOCK" ]] || die \
   "버전 불일치 — tauri.conf.json=$VERSION_CONF / package.json=$VERSION_PKG / src-tauri/Cargo.toml=$VERSION_CARGO / ouro-mcp/Cargo.toml=$VERSION_MCP / mcpb/manifest.json=$VERSION_MCPB / package-lock.json=$VERSION_LOCK"
 info "버전 $VERSION_CONF (여섯 파일 일치)"
+# 동기화 헬퍼·iOS 앱(개발 16) — 맥 1.0 과 폰 1.0 이 같이 간다. xcodegen 이 project.yml 에서 Info.plist 를 다시 쓰므로 정본은 yml 이다.
+for yml in sync/project.yml ios/project.yml; do
+  while read -r v; do
+    [[ "$v" == "$VERSION_CONF" ]] || die "$yml 의 CFBundleShortVersionString 이 $v 다 (빌드 버전 $VERSION_CONF)"
+  done < <(sed -n 's/^ *CFBundleShortVersionString: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$yml")
+done
+info "헬퍼·iOS 버전도 $VERSION_CONF"
 
 # 더러운 작업 트리에서 낸 배포본은 어떤 소스로 만든 건지 나중에 되짚을 수 없다.
 IS_DIRTY=0
@@ -623,6 +630,11 @@ if [[ $UNIVERSAL -eq 1 ]]; then
 else
   ./scripts/build-sidecars.sh || die "사이드카 빌드 실패"
 fi
+
+# 동기화 헬퍼(OuroSync.app, 개발 16)도 **자격증명을 싣기 전에** 만든다 — Developer ID export 는 키체인과 Xcode 계정을 쓰고
+# 이 스크립트의 자격증명(업데이트 키·앱 암호)은 안 쓴다. tauri.conf.json 의 bundle.macOS.files 가 src-tauri/helpers/OuroSync.app 을
+# Contents/Helpers/ 로 넣는다(없으면 번들 단계가 죽는다). 헬퍼는 번들러가 다시 서명하지 않는다 — 검증은 아래 «헬퍼 검증».
+./scripts/build-sync-helper.sh --release || die "동기화 헬퍼 빌드 실패 (Xcode 에 개발자 계정이 로그인돼 있는지, Developer ID 인증서가 있는지)"
 
 # 확장(.mcpb)도 **자격증명을 싣기 전에** 만든다 — npx(임의 노드 코드)가 비밀을 보지 않게. 안에 실행 파일이 없어서
 # (런처 셸 + manifest) 앱보다 먼저 만들어도 가리킬 대상이 어긋나지 않는다 — 런처는 빌드 산출물이 아니라 **설치된**
@@ -841,6 +853,31 @@ if [[ $NOTARIZE -eq 1 ]]; then
   spctl -a -t exec -vvv "$APP_PATH" 2>&1 | sed 's/^/  /' \
     || die "Gatekeeper 가 앱을 거부했다 — 위 사유 참고"
 fi
+
+# ── 4-a2. 동기화 헬퍼 검증 (개발 16) ───────────────────────────────────────
+# 헬퍼가 빠지면 «iCloud 동기화» 가 설정 창에 아예 안 나온다(sync.rs find_helper). 운영 환경이 아니면 사용자 일정이
+# **개발 CloudKit DB** 로 가고, 그 DB 는 개발자가 콘솔에서 언제든 초기화할 수 있다 — 조용히 데이터를 잃는 길이라 게이트로 둔다.
+step "동기화 헬퍼 검증"
+HELPER="$APP_PATH/Contents/Helpers/OuroSync.app"
+[[ -x "$HELPER/Contents/MacOS/OuroSync" ]] || die "앱 안에 동기화 헬퍼가 없다: $HELPER (tauri.conf.json bundle.macOS.files)"
+codesign --verify --deep --strict "$HELPER" 2>&1 | sed 's/^/  /' || die "헬퍼 서명 검증 실패"
+H_SIG="$(codesign -dvvv "$HELPER" 2>&1)"
+H_TEAM="$(sed -n 's/^TeamIdentifier=//p' <<<"$H_SIG" | head -1)"
+H_IDENT="$(sed -n 's/^Identifier=//p' <<<"$H_SIG" | head -1)"
+[[ "$H_TEAM" == "$EXPECT_TEAM_ID" ]] || die "헬퍼 팀 ID 가 $H_TEAM 다 (기대 $EXPECT_TEAM_ID)"
+[[ "$H_IDENT" == "com.dinggi5.ouro.sync" ]] || die "헬퍼 번들 ID 가 $H_IDENT 다 (기대 com.dinggi5.ouro.sync)"
+grep -q 'flags=.*runtime' <<<"$H_SIG" || die "헬퍼에 하드닝 런타임이 없다. 공증이 거부된다"
+grep -q '^Authority=Developer ID Application' <<<"$H_SIG" || die "헬퍼가 Developer ID 로 서명되지 않았다"
+grep -q '^Timestamp=' <<<"$H_SIG" || die "헬퍼 서명에 보안 타임스탬프가 없다"
+H_ENT="$(codesign -d --entitlements :- "$HELPER" 2>/dev/null)"
+[[ "$(plutil -extract com.apple.developer.icloud-container-environment raw -o - - <<<"$H_ENT" 2>/dev/null)" == "Production" ]] \
+  || die "헬퍼가 운영 CloudKit 환경이 아니다 — 사용자 데이터가 개발 DB 로 간다 (build-sync-helper.sh 의 iCloudContainerEnvironment)"
+[[ "$(plutil -extract com.apple.developer.aps-environment raw -o - - <<<"$H_ENT" 2>/dev/null)" == "production" ]] \
+  || die "헬퍼의 aps-environment 가 production 이 아니다 — 다른 기기의 변경 푸시를 못 받는다"
+[[ -f "$HELPER/Contents/embedded.provisionprofile" ]] || die "헬퍼에 프로비저닝 프로파일이 없다 — iCloud 엔타이틀먼트가 실행 때 거부된다"
+H_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$HELPER/Contents/Info.plist" 2>/dev/null || true)"
+[[ "$H_VERSION" == "$VERSION_CONF" ]] || die "헬퍼 버전이 $H_VERSION 다 (빌드 버전 $VERSION_CONF — sync/project.yml)"
+info "헬퍼 · 팀 $H_TEAM · $H_IDENT · $H_VERSION · 운영 CloudKit"
 
 # ── 4-b. 업데이트 산출물 검증 (개발 31) ─────────────────────────────────────
 # 위에서 검증한 건 DMG 로 나가는 앱이다. **인앱 업데이트로 나가는 건 이 tar 다** —

@@ -35,8 +35,8 @@ targets:
       path: Ouro/Info.plist
       properties:
         CFBundleDisplayName: Ouro
-        CFBundleShortVersionString: "0.1.0"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         UILaunchScreen: {}
         UIBackgroundModes: [remote-notification]
         ITSAppUsesNonExemptEncryption: false
@@ -51,6 +51,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.dinggi5.ouro.ios
         PRODUCT_NAME: Ouro
+        # 빌드 번호 — TestFlight 는 올릴 때마다 커야 한다. scripts/upload-ios.sh 가 시각으로 덮어쓴다(앱·확장 같은 값).
+        CURRENT_PROJECT_VERSION: "1"
         DEVELOPMENT_TEAM: 74ZAMXKVXN
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "6.0"
@@ -74,14 +76,15 @@ targets:
       path: Widgets/Info.plist
       properties:
         CFBundleDisplayName: Ouro
-        CFBundleShortVersionString: "0.1.0"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.dinggi5.ouro.ios.widgets
         PRODUCT_NAME: OuroWidgets
+        CURRENT_PROJECT_VERSION: "1"
         DEVELOPMENT_TEAM: 74ZAMXKVXN
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "6.0"

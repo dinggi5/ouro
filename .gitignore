@@ -50,3 +50,5 @@ ios/build/
 ouro-parse/swift/OuroParseFFI.xcframework/
 ouro-parse/swift/.build/
 ouro-parse/swift/.swiftpm/
+# 배포용 헬퍼 — scripts/build-sync-helper.sh --release 가 만들고 bundle.macOS.files 가 앱에 넣는다(개발 16)
+src-tauri/helpers/

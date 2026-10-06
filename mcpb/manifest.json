@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "ouro",
   "display_name": "Ouro",
-  "version": "0.1.2",
+  "version": "1.0.0",
   "description": "A local menu bar calendar for macOS — read your schedule, find free time, and propose events and errands that you approve in the app.",
   "long_description": "Connects to the installed Ouro app (a calendar that lives only on this Mac). Claude can read events and free time, and **propose** events or errands — a message your Claude Code or Codex runs at a set time. Nothing is added or run until you approve the card in the Ouro popover; private events are never shared.\n\nThis extension contains no executable. It verifies and runs the signed, notarized binary inside the installed Ouro.app. Install Ouro first: https://github.com/dinggi5/ouro",
   "author": {

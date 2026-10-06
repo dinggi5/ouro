@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Ouro",
-  "version": "0.1.2",
+  "version": "1.0.0",
   "identifier": "com.dinggi5.ouro",
   "build": {
     "beforeDevCommand": "./scripts/build-sidecars.sh && npm run dev",
@@ -61,6 +61,9 @@
     "shortDescription": "선순환 캘린더",
     "longDescription": "이 맥에만 저장되는 메뉴바 캘린더. 정해진 시간에 Claude·Codex 에게 일을 부탁하고, 답을 다시 캘린더에 걸어 둔다.",
     "macOS": {
+      "files": {
+        "Helpers/OuroSync.app": "helpers/OuroSync.app"
+      },
       "hardenedRuntime": true,
       "minimumSystemVersion": "11.0"
     }
