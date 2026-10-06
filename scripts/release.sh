@@ -870,9 +870,11 @@ grep -q 'flags=.*runtime' <<<"$H_SIG" || die "헬퍼에 하드닝 런타임이 �
 grep -q '^Authority=Developer ID Application' <<<"$H_SIG" || die "헬퍼가 Developer ID 로 서명되지 않았다"
 grep -q '^Timestamp=' <<<"$H_SIG" || die "헬퍼 서명에 보안 타임스탬프가 없다"
 H_ENT="$(codesign -d --entitlements :- "$HELPER" 2>/dev/null)"
-[[ "$(plutil -extract com.apple.developer.icloud-container-environment raw -o - - <<<"$H_ENT" 2>/dev/null)" == "Production" ]] \
+# 🔴 plutil -extract 는 키의 점(.)을 경로 구분으로 읽어 «com.apple.…» 를 못 찾는다 — plistlib 로 키를 통째로 본다(개발 16 실측).
+h_ent() { python3 -c 'import plistlib,sys; print(plistlib.loads(sys.stdin.buffer.read()).get(sys.argv[1], ""))' "$1" <<<"$H_ENT" 2>/dev/null; }
+[[ "$(h_ent com.apple.developer.icloud-container-environment)" == "Production" ]] \
   || die "헬퍼가 운영 CloudKit 환경이 아니다 — 사용자 데이터가 개발 DB 로 간다 (build-sync-helper.sh 의 iCloudContainerEnvironment)"
-[[ "$(plutil -extract com.apple.developer.aps-environment raw -o - - <<<"$H_ENT" 2>/dev/null)" == "production" ]] \
+[[ "$(h_ent com.apple.developer.aps-environment)" == "production" ]] \
   || die "헬퍼의 aps-environment 가 production 이 아니다 — 다른 기기의 변경 푸시를 못 받는다"
 [[ -f "$HELPER/Contents/embedded.provisionprofile" ]] || die "헬퍼에 프로비저닝 프로파일이 없다 — iCloud 엔타이틀먼트가 실행 때 거부된다"
 H_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$HELPER/Contents/Info.plist" 2>/dev/null || true)"
