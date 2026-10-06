@@ -4,10 +4,10 @@
 #   ./scripts/upload-ios.sh            .ipa 만 만든다(ios/build/release/export) — 서명·프로비저닝 점검용
 #   ./scripts/upload-ios.sh --upload   만든 뒤 App Store Connect 에 올린다(TestFlight 처리 후 내부 테스터에게 보인다)
 #
-# 처음 한 번(사람 몫): App Store Connect 에 앱 레코드(번들 id com.dinggi5.ouro.ios)가 있어야 올라간다.
+# 처음 한 번(사람 몫): App Store Connect 에 앱 레코드(번들 id com.dinggi5.ouro.ios)가 있어야 올라간다 — 없으면
+#   «App record … not found» 로 멈춘다. Xcode Organizer(open ios/build/release/Ouro.xcarchive)의 Distribute App 은 레코드를 만들어 준다.
 # App ID 둘(.ios · .ios.widgets)·App Group·배포 프로파일은 -allowProvisioningUpdates 가 Xcode 에 로그인된 계정으로 만든다.
 # 운영 환경은 export 가 정한다 — App Store 배포 프로파일이라 aps-environment 는 production, CloudKit 도 운영 환경이다.
-# 올리기 인증은 맥 배포와 같은 App Store Connect API 키(scripts/release.env 의 APPLE_API_*)를 쓴다.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 UPLOAD=0
@@ -24,24 +24,12 @@ rm -rf "$OUT"
 mkdir -p "$OUT"
 DEST=export
 [[ $UPLOAD -eq 1 ]] && DEST=upload
-# App Store Connect API 키 — 올리기뿐 아니라 **프로비저닝**(App ID·App Group·배포 프로파일 만들기)에도 쓴다.
-# Xcode 에 계정이 로그인돼 있지 않아도 되게(개발 16 실측: 키체인의 Xcode 계정이 깨져 «No Accounts» 로 archive 가 죽었다).
-# 자격증명은 메인 체크아웃의 release.env 에서(워크트리엔 없다 — release.sh 와 같은 규칙).
-ENV_FILE="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)/../scripts/release.env"
-[[ -f "$ENV_FILE" ]] || ENV_FILE="$ROOT/scripts/release.env"
+# 인증은 **Xcode 에 로그인된 계정**(Xcode → 설정 → Accounts)이 한다 — 프로비저닝(App ID·App Group·배포 프로파일)과 올리기 둘 다.
+# release.env 의 App Store Connect API 키는 공증용이라 프로파일을 만들 권한이 없다(개발 16 실측: «Authentication failed»).
+# 권한 있는(Admin) 키를 따로 쓰려면 OURO_ASC_KEY_PATH · OURO_ASC_KEY_ID · OURO_ASC_ISSUER 를 준다.
 AUTH=()
-if [[ -f "$ENV_FILE" ]]; then
-  KEY_ID="$(sed -n 's/^APPLE_API_KEY="\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "$ENV_FILE" | head -1)"
-  ISSUER="$(sed -n 's/^APPLE_API_ISSUER="\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "$ENV_FILE" | head -1)"
-  KEY_PATH="$(sed -n 's/^APPLE_API_KEY_PATH="\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "$ENV_FILE" | head -1)"
-  KEY_PATH="${KEY_PATH/#\$HOME/$HOME}"
-  if [[ -n "$KEY_ID" && -n "$ISSUER" && -f "$KEY_PATH" ]]; then
-    AUTH=(-authenticationKeyPath "$KEY_PATH" -authenticationKeyID "$KEY_ID" -authenticationKeyIssuerID "$ISSUER")
-  fi
-fi
-if [[ $UPLOAD -eq 1 && ${#AUTH[@]} -eq 0 ]]; then
-  echo "올리려면 release.env 에 APPLE_API_KEY · APPLE_API_ISSUER · APPLE_API_KEY_PATH 가 필요해요" >&2
-  exit 1
+if [[ -n "${OURO_ASC_KEY_PATH:-}" ]]; then
+  AUTH=(-authenticationKeyPath "$OURO_ASC_KEY_PATH" -authenticationKeyID "$OURO_ASC_KEY_ID" -authenticationKeyIssuerID "$OURO_ASC_ISSUER")
 fi
 cat > "$OUT/ExportOptions.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
