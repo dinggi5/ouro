@@ -30,6 +30,8 @@ public final class RecordStore {
     public var sync = SyncInfo()
     /// 보낼 것이 바뀌면 부른다(브리지가 헬퍼 엔진에 알린다).
     @ObservationIgnored public var onPending: (([RecordRef], [RecordRef]) -> Void)?
+    /// 디스크에 쓴 뒤(메모리 저장소면 쓸 차례에) 부른다 — 앱이 위젯 피드를 다시 만든다(개발 15).
+    @ObservationIgnored public var onPersist: (@MainActor () -> Void)?
     @ObservationIgnored let url: URL?
 
     struct Disk: Codable {
@@ -61,7 +63,10 @@ public final class RecordStore {
     /// 디스크에 쓴다. 실패하면 던진다 — 받은 변경을 «적었다(ack)» 고 하기 전에 확인해야 한다(코덱스 개발 11 P0).
     func persist() throws {
         if let loadError { throw OuroError(loadError) }
-        guard let url else { return }
+        guard let url else {
+            onPersist?()
+            return
+        }
         let d = Disk(records: records, saves: saves, deletes: deletes, version: version)
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -72,6 +77,7 @@ public final class RecordStore {
                 let options: Data.WritingOptions = [.atomic]
             #endif
             try JSONEncoder().encode(d).write(to: url, options: options)
+            onPersist?()
         } catch {
             sync.error = "기기에 저장하지 못했어요: \(error.localizedDescription)"
             throw OuroError("기기에 저장하지 못했어요 — 저장 공간을 확인해 주세요")
@@ -244,6 +250,7 @@ public final class RecordStore {
                 loadError = "옛 iCloud 계정의 일정을 지우지 못했어요 — 앱을 지웠다 다시 깔아 주세요"
                 sync.error = loadError
             }
+            onPersist?() // 메모리는 비었다 — 위젯도 옛 계정의 일정을 그만 보이게.
         }
     }
 

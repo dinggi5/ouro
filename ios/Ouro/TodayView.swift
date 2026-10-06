@@ -135,6 +135,18 @@ struct TodayView: View {
             }
         case .sheet(let d, let why):
             sheet = .quick(d, why)
+        case .today:
+            sheet = nil
+            day = cal.startOfDay(for: Date())
+        case .event(let id):
+            // 그 사이 지워졌으면 그 날 대신 오늘로.
+            guard let e = store.event(id) else { return take(.today) }
+            day = cal.startOfDay(for: e.start)
+            sheet = .editEvent(id)
+        case .errand(let id):
+            guard let r = store.errand(id) else { return take(.today) }
+            day = cal.startOfDay(for: r.at)
+            sheet = .errand(id)
         }
     }
 

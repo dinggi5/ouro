@@ -479,3 +479,59 @@ extension Date {
     public init(ms: Int64) { self.init(timeIntervalSince1970: Double(ms) / 1000) }
     public var ms: Int64 { Int64((timeIntervalSince1970 * 1000).rounded()) }
 }
+
+// MARK: 위젯 피드(개발 15) — 앱이 이걸로 작은 JSON 을 만들어 앱 그룹에 둔다. 위젯은 저장소를 열지 않는다.
+
+/// 다가오는 것 하나 — 일정 또는 아직 안 돈 부탁.
+public struct UpcomingView: Identifiable, Equatable, Sendable {
+    public var id: String
+    public var title: String
+    public var allDay: Bool
+    public var start: Date
+    /// 일정의 끝(종일이면 배타 — 끝난 다음 날 0시). 부탁은 `start` 와 같다.
+    public var end: Date
+    public var errand: Bool
+}
+
+/// 안 읽은 답 하나.
+public struct AnswerView: Identifiable, Equatable, Sendable {
+    public var id: String { run }
+    public var errand: String
+    public var run: String
+    public var title: String
+    public var finishedAt: Date
+}
+
+extension RecordStore {
+    /// `now` 부터 `days` 날 안의 아직 안 끝난 일정과 아직 안 돈(승인된) 부탁 — 시작순, 여러 날 걸친 일정은 한 번.
+    /// 종일 일정은 그날 0시가 시작이라 같은 날의 시각 일정보다 앞에 온다.
+    public func upcoming(from now: Date, days: Int = 7, limit: Int = 12) -> [UpcomingView] {
+        let today = cal.startOfDay(for: now)
+        var seen = Set<String>()
+        var out: [UpcomingView] = []
+        for i in 0..<max(days, 1) {
+            guard let day = cal.date(byAdding: .day, value: i, to: today) else { break }
+            for e in events(on: day) where seen.insert(e.id).inserted {
+                // 아직 안 끝났거나(지금 하는 중 포함) 아직 시작 전(길이 0 인 일정).
+                guard e.end > now || e.start >= now else { continue }
+                out.append(UpcomingView(id: e.id, title: e.title, allDay: e.allDay, start: e.start, end: e.end, errand: false))
+            }
+            for r in errands(on: day) where r.approved && r.run == nil && r.at >= now && seen.insert(r.id).inserted {
+                out.append(UpcomingView(id: r.id, title: r.title, allDay: false, start: r.at, end: r.at, errand: true))
+            }
+        }
+        return Array(out.sorted { ($0.start, $0.allDay ? 0 : 1, $0.id) < ($1.start, $1.allDay ? 0 : 1, $1.id) }.prefix(limit))
+    }
+
+    /// 안 읽은 답 — 최근 것부터. 지운 부탁의 답은 세지 않는다(맥 메뉴바 표시와 같은 조건, `errands.rs`).
+    public func unreadAnswers() -> [AnswerView] {
+        records.values.compactMap { r -> AnswerView? in
+            let b = r.bag
+            guard r.type == Kind.run, b.str("status") == "done", b.int("read_at") == nil, let item = b.str("item"),
+                let e = errand(item)
+            else { return nil }
+            return AnswerView(errand: item, run: r.name, title: e.title, finishedAt: Date(ms: b.int("finished_at") ?? b.int("started_at") ?? 0))
+        }
+        .sorted { ($0.finishedAt, $0.run) > ($1.finishedAt, $1.run) }
+    }
+}

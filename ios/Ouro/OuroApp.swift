@@ -18,6 +18,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 enum AppRequest: Equatable {
     /// 입력칸에 포커스.
     case quickAdd
+    /// 위젯을 눌렀다 — 그 일정·부탁을 연다(개발 15).
+    case event(String), errand(String), today
     /// 사람이 보고 저장해야 하는 초안(날짜를 못 찾았거나 경고가 있을 때) — 일정 시트로, 까닭과 함께.
     case sheet(EventDraft, [String])
 }
@@ -30,6 +32,7 @@ final class AppModel {
 
     @ObservationIgnored let store: RecordStore
     @ObservationIgnored let bridge: LocalBridge
+    @ObservationIgnored let widgets: WidgetWriter
     @ObservationIgnored let demo = ProcessInfo.processInfo.arguments.contains("-demo")
     var request: AppRequest?
     @ObservationIgnored private var started = false
@@ -38,7 +41,20 @@ final class AppModel {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Ouro")
         store = RecordStore(url: demo ? nil : base.appendingPathComponent("records.json"))
         bridge = LocalBridge(store: store, stateDir: base.appendingPathComponent("sync"))
+        widgets = WidgetWriter(store: store)
+        store.onPersist = { [widgets] in widgets.changed() }
         if demo { Demo.fill(store) }
+    }
+
+    /// 위젯이 건 주소(`ouro://event/<id>` · `ouro://errand/<id>` · `ouro://today`).
+    func open(_ url: URL) {
+        guard url.scheme == "ouro" else { return }
+        let id = url.pathComponents.dropFirst().first ?? ""
+        switch url.host() {
+        case "event" where !id.isEmpty: request = .event(id)
+        case "errand" where !id.isEmpty: request = .errand(id)
+        default: request = .today
+        }
     }
 
     /// 동기화를 켠다(한 번만). 화면이 뜰 때와, Siri 가 화면 없이 깨웠을 때 둘 다 부른다.
@@ -77,9 +93,12 @@ struct OuroApp: App {
             TodayView(model: model)
                 .tint(.ink)
                 .task { await model.startSync() }
+                .onOpenURL { model.open($0) }
         }
         .onChange(of: phase) { _, p in
             if p == .active { Task { await model.fetch() } }
+            // 뒤로 갈 때 피드를 지금 쓴다 — 시각이 지나 빠질 것을 거르고, 모으던 변경이 잠들기 전에 나가게.
+            if p == .background { model.widgets.write() }
         }
     }
 }

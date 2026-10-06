@@ -29,6 +29,8 @@ targets:
         com.apple.developer.icloud-services: [CloudKit]
         com.apple.developer.icloud-container-identifiers: [iCloud.com.dinggi5.ouro]
         aps-environment: development
+        # 위젯 피드(widget.json)를 두는 곳 — 앱이 쓰고 위젯이 읽는다(개발 15).
+        com.apple.security.application-groups: [group.com.dinggi5.ouro]
     info:
       path: Ouro/Info.plist
       properties:
@@ -41,6 +43,10 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
+        # 위젯을 누르면 그 항목을 연다(ouro://event/<id> · ouro://errand/<id>).
+        CFBundleURLTypes:
+          - CFBundleURLName: com.dinggi5.ouro.ios
+            CFBundleURLSchemes: [ouro]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.dinggi5.ouro.ios
@@ -55,11 +61,15 @@ targets:
         DEVELOPMENT_LANGUAGE: ko
         # Shared 의 인텐트가 앱 쪽에서만 화면을 건드리게.
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) OURO_APP
-  # 위젯 확장(개발 14) — 지금은 «빠른 추가» 컨트롤 하나. 누르면 앱이 열리며 앱 쪽에서 인텐트가 돈다.
+  # 위젯 확장 — «빠른 추가» 컨트롤(개발 14) · 다음 일정·답 위젯(개발 15). 저장소는 안 열고 앱 그룹의 피드만 읽는다.
   OuroWidgets:
     type: app-extension
     platform: iOS
     sources: [Widgets, Shared]
+    entitlements:
+      path: Widgets/OuroWidgets.entitlements
+      properties:
+        com.apple.security.application-groups: [group.com.dinggi5.ouro]
     info:
       path: Widgets/Info.plist
       properties:

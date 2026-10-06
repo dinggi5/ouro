@@ -1,5 +1,5 @@
-// 위젯 확장 — 지금은 컨트롤 하나(개발 14). 제어 센터·잠금 화면·동작 버튼에 놓으면 입력칸이 열린 Ouro 를 연다.
-// 다음 일정·답 도착 위젯은 개발 15.
+// 위젯 확장 — 컨트롤 하나(개발 14): 제어 센터·잠금 화면·동작 버튼에 놓으면 입력칸이 열린 Ouro 를 연다.
+// 다음 일정·답 위젯(개발 15): `NextWidget.swift`.
 
 import AppIntents
 import SwiftUI
@@ -20,6 +20,8 @@ struct QuickAddControl: ControlWidget {
 @main
 struct OuroWidgets: WidgetBundle {
     var body: some Widget {
+        NextWidget()
+        AnswersWidget()
         QuickAddControl()
     }
 }

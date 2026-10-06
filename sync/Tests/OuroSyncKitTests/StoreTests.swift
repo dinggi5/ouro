@@ -330,3 +330,75 @@ let fixtures = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appen
     try a.apply([], deleted: [RecordRef(type: Kind.item, name: id)])
     #expect(a.event(id) == nil)
 }
+
+// MARK: 위젯 피드(개발 15)
+
+@Test @MainActor func upcomingSkipsEndedAndListsEachEventOnce() throws {
+    let s = RecordStore(url: nil)
+    let cal = Calendar.current
+    let today = cal.startOfDay(for: Date(ms: 1_800_000_000_000))
+    func at(_ d: Int, _ h: Int) -> Date { cal.date(byAdding: .hour, value: d * 24 + h, to: today)! }
+    let now = at(0, 12)
+    var e = EventDraft()
+    e.title = "끝난 회의"
+    e.start = at(0, 9); e.end = at(0, 10)
+    try s.createEvent(e)
+    e.title = "하는 중"
+    e.start = at(0, 11); e.end = at(0, 13)
+    let doing = try s.createEvent(e)
+    e.title = "사흘 출장"
+    e.start = at(1, 9); e.end = at(3, 18)
+    let trip = try s.createEvent(e)
+    e.title = "먼 일정"
+    e.start = at(9, 9); e.end = at(9, 10)
+    try s.createEvent(e)
+    e.title = "오늘 종일"
+    e.allDay = true
+    e.start = today; e.end = today
+    let allDay = try s.createEvent(e)
+    var r = ErrandDraft()
+    r.prompt = "저녁 정리"
+    r.at = at(0, 18)
+    let errand = try s.createErrand(r)
+    r.prompt = "아침에 지난 것"
+    r.at = at(0, 8)
+    try s.createErrand(r)
+    let up = s.upcoming(from: now)
+    #expect(up.map(\.id) == [allDay, doing, errand, trip], "끝난 것·지난 부탁·7일 밖은 빼고, 여러 날 일정은 한 번")
+    #expect(up.first { $0.id == errand }?.errand == true)
+    #expect(s.upcoming(from: now, limit: 2).count == 2)
+}
+
+@Test @MainActor func unreadAnswersSkipReadAndDeletedErrands() throws {
+    let s = RecordStore(url: nil)
+    var r = ErrandDraft()
+    r.prompt = "커밋 정리"
+    r.at = Date(ms: 1_800_000_000_000)
+    let a = try s.createErrand(r)
+    r.prompt = "지울 부탁"
+    let b = try s.createErrand(r)
+    func run(_ name: String, _ item: String, _ status: String, finished: Int64) -> WireRecord {
+        WireRecord(type: Kind.run, name: name, bag: [
+            "item": .string(item), "status": .string(status), "started_at": .int(finished - 1000), "finished_at": .int(finished),
+        ], system: nil)
+    }
+    try s.apply([
+        run("r1", a, "done", finished: 1_800_000_100_000), run("r2", a, "done", finished: 1_800_000_200_000),
+        run("r3", a, "failed", finished: 1_800_000_300_000), run("r4", b, "done", finished: 1_800_000_400_000),
+    ], deleted: [])
+    try s.trash(b)
+    #expect(s.unreadAnswers().map(\.run) == ["r2", "r1"])
+    #expect(s.unreadAnswers().first?.title == "커밋 정리")
+    s.markRead("r2")
+    #expect(s.unreadAnswers().map(\.run) == ["r1"])
+}
+
+@Test @MainActor func persistHookFiresAfterWrites() throws {
+    let s = RecordStore(url: nil)
+    var n = 0
+    s.onPersist = { n += 1 }
+    var e = EventDraft()
+    e.title = "치과"
+    try s.createEvent(e)
+    #expect(n == 1)
+}
