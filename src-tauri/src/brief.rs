@@ -3,7 +3,8 @@
 // 설계 결정:
 //   · **전부 로컬 계산.** 일정이 바깥으로 나가지 않는다 — 비공개 일정도 센다(내 맥 안의 요약이라서).
 //   · 빈 시간은 «낮 9시~18시 중 지금 이후, 30분 넘게 빈 틈» 앞의 둘. 종일 일정은 시간을 막지 않는다(`busy_between` 과 같은 규칙).
-//   · 아침 알림은 하루 한 번, 8시~11시 사이 처음 깬 때. 오늘 아무것도 없으면 띄우지 않는다(빈 알림은 소음). 끌 수 있다(`settings`).
+//   · 아침 알림은 하루 한 번, 정한 시각(기본 8:00, 설정 창에서 30분 단위 — 개발 16)부터 3시간 안에 처음 깬 때.
+//     오늘 아무것도 없으면 띄우지 않는다(빈 알림은 소음). 끌 수 있다(`settings`).
 
 use chrono::{Local, NaiveDate, NaiveTime, TimeZone};
 use serde::Serialize;
@@ -14,9 +15,13 @@ use crate::store::{Event, Store};
 const WORK_START: u32 = 9;
 const WORK_END: u32 = 18;
 const FREE_MIN_MS: i64 = 30 * 60 * 1000;
-pub(crate) const MORNING_FROM: u32 = 8;
-pub(crate) const MORNING_UNTIL: u32 = 11;
+/// 알림 시각 기본값(자정부터 분).
+pub(crate) const MORNING_DEFAULT_MIN: u32 = 8 * 60;
+/// 정한 시각을 놓쳤어도(맥이 자고 있었다) 이만큼 안에 깨면 띄운다. 그 뒤엔 그날은 건너뛴다 — 저녁에 «오늘 요약» 은 늦다.
+const MORNING_WINDOW_MIN: u32 = 3 * 60;
 pub(crate) const KEY_ON: &str = "briefing";
+/// 알림 시각(자정부터 분, 30분 단위).
+pub(crate) const KEY_AT: &str = "briefing_at";
 pub(crate) const KEY_LAST: &str = "briefing_last";
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -32,6 +37,8 @@ pub(crate) struct Briefing {
     pub parts: Vec<String>,
     /// 아침 알림이 켜져 있나.
     pub morning: bool,
+    /// 알림 시각(자정부터 분).
+    pub morning_at: u32,
 }
 
 fn at(day: NaiveDate, h: u32) -> Option<i64> {
@@ -88,7 +95,7 @@ pub(crate) fn summarize(events: &[Event], errands: usize, day: NaiveDate, now: i
         let b = if a.get(..6) == b.get(..6) { b[b.find(' ').map_or(0, |i| i + 1)..].to_string() } else { b };
         parts.push(format!("빈 시간 {a}–{b}"));
     }
-    Briefing { events: events.len(), errands, conflicts, free, parts, morning: true }
+    Briefing { events: events.len(), errands, conflicts, free, parts, morning: true, morning_at: MORNING_DEFAULT_MIN }
 }
 
 /// 오늘 브리핑 — DB 에서 읽어 센다.
@@ -100,6 +107,7 @@ pub(crate) fn today(store: &Store, now: i64) -> Result<Briefing, String> {
     let errands = store.list_errands(from, to)?.iter().filter(|e| e.run.is_none()).count();
     let mut b = summarize(&events, errands, day, now);
     b.morning = morning_on(store);
+    b.morning_at = morning_at(store);
     Ok(b)
 }
 
@@ -107,12 +115,29 @@ pub(crate) fn morning_on(store: &Store) -> bool {
     store.setting(KEY_ON).ok().flatten().as_deref() != Some("off")
 }
 
-/// 아침 알림을 띄울 때인가 — 켜져 있고, 8~11시이고, 오늘 아직 안 띄웠다. 띄우기로 했으면 «오늘 띄움» 을 먼저 적는다.
-/// 돌려주는 값 = 알림 본문(오늘 아무것도 없으면 None — 적기만 하고 안 띄운다).
+/// 알림 시각 — 적힌 값이 이상하면 기본값.
+pub(crate) fn morning_at(store: &Store) -> u32 {
+    store
+        .setting(KEY_AT)
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|m| valid_at(*m))
+        .unwrap_or(MORNING_DEFAULT_MIN)
+}
+
+/// 00:00~23:30, 30분 단위.
+pub(crate) fn valid_at(min: u32) -> bool {
+    min < 24 * 60 && min.is_multiple_of(30)
+}
+
+/// 아침 알림을 띄울 때인가 — 켜져 있고, 정한 시각부터 3시간 안이고(자정은 넘지 않는다), 오늘 아직 안 띄웠다.
+/// 띄우기로 했으면 «오늘 띄움» 을 먼저 적는다. 돌려주는 값 = 알림 본문(오늘 아무것도 없으면 None — 적기만 하고 안 띄운다).
 pub(crate) fn morning_due(store: &Store, now: i64) -> Option<String> {
     let local = Local.timestamp_millis_opt(now).earliest()?;
-    let hour = chrono::Timelike::hour(&local);
-    if !(MORNING_FROM..MORNING_UNTIL).contains(&hour) || !morning_on(store) {
+    let min = chrono::Timelike::hour(&local) * 60 + chrono::Timelike::minute(&local);
+    let from = morning_at(store);
+    if !(from..from + MORNING_WINDOW_MIN).contains(&min) || !morning_on(store) {
         return None;
     }
     let key = local.date_naive().format("%Y-%m-%d").to_string();
@@ -183,5 +208,27 @@ mod tests {
         s.set_setting(KEY_ON, "off").unwrap();
         assert_eq!(morning_due(&s, nine), None);
         assert_eq!(s.setting(KEY_LAST).unwrap().as_deref(), Some("2000-01-01"), "꺼져 있으면 적지도 않는다");
+    }
+
+    #[test]
+    fn morning_follows_chosen_time() {
+        let s = Store::open_in_memory();
+        let day = Local::now().date_naive();
+        let hm = |h: u32, m: u32| {
+            Local.from_local_datetime(&day.and_hms_opt(h, m, 0).unwrap()).earliest().unwrap().timestamp_millis()
+        };
+        s.set_setting(KEY_AT, "390").unwrap(); // 6:30
+        assert_eq!(morning_at(&s), 390);
+        s.set_setting(KEY_LAST, "2000-01-01").unwrap();
+        assert_eq!(morning_due(&s, hm(6, 0)), None);
+        assert_eq!(s.setting(KEY_LAST).unwrap().as_deref(), Some("2000-01-01"), "6:30 전");
+        assert_eq!(morning_due(&s, hm(9, 30)), None);
+        assert_eq!(s.setting(KEY_LAST).unwrap().as_deref(), Some("2000-01-01"), "3시간 지나면 그날은 건너뛴다");
+        morning_due(&s, hm(6, 45));
+        assert_eq!(s.setting(KEY_LAST).unwrap(), Some(day.format("%Y-%m-%d").to_string()), "6:45 에 깨면 띄운다");
+        for bad in ["25", "1440", "abc"] {
+            s.set_setting(KEY_AT, bad).unwrap();
+            assert_eq!(morning_at(&s), MORNING_DEFAULT_MIN, "{bad}");
+        }
     }
 }

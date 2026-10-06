@@ -1,5 +1,5 @@
 // iCloud 동기화 — 러스트 `sync.rs` 의 네 문(sync_status · set_sync · make_runner · sync_fetch)만 쓴다.
-// 카드는 메뉴바 «iCloud 동기화…» 로만 연다(헬퍼가 든 앱에만 그 메뉴가 있다). 평소엔 아무것도 안 보인다 — 켜져 있는데 문제가 있을 때만 아래 한 줄.
+// 켜고 끄기·실행 맥은 설정 창에서(개발 16). 팝오버엔 평소 아무것도 안 보인다 — 켜져 있는데 문제가 있을 때만 아래 한 줄(누르면 설정 창).
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -20,19 +20,15 @@ export type SyncStatus = {
 
 export type SyncState = {
   status: SyncStatus | null;
-  open: boolean;
   busy: boolean;
   /** 누른 일이 실패했을 때의 한 줄(상태의 error 와 따로 — 상태 오류는 헬퍼가 알려 준 것) */
   message: string | null;
-  show: () => void;
-  close: () => void;
   toggle: () => void;
   makeRunner: () => void;
 };
 
 export function useSync(): SyncState {
   const [status, setStatus] = useState<SyncStatus | null>(null);
-  const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -46,11 +42,6 @@ export function useSync(): SyncState {
     let dead = false;
     const keep = (f: () => void) => (dead ? f() : offs.push(f));
     listen("sync-changed", load).then(keep, () => {});
-    listen("sync-open", () => {
-      setMessage(null);
-      setOpen(true);
-      load();
-    }).then(keep, () => {});
     // 팝오버가 보일 때마다 다른 기기의 변경을 바로 받는다(푸시를 놓쳤을 때의 보험). 꺼져 있으면 러스트가 그냥 넘긴다.
     const onVisible = () => {
       if (document.visibilityState === "visible") invoke("sync_fetch").catch(() => {});
@@ -79,11 +70,8 @@ export function useSync(): SyncState {
 
   return {
     status,
-    open,
     busy,
     message,
-    show: () => setOpen(true),
-    close: () => setOpen(false),
     toggle: () => void run(() => invoke<SyncStatus>("set_sync", { on: !status?.on })),
     makeRunner: () => void run(() => invoke<SyncStatus>("make_runner")),
   };

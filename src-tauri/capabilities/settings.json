@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings",
+  "description": "설정 창(개발 16). 팝오버와 같은 이벤트 듣기 둘뿐 — 보통 제목 막대라 창 끌기 권한이 필요 없고, 닫기는 시스템 단추·⌘W(앱 커맨드 close_window)다.",
+  "windows": [
+    "settings"
+  ],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
+}

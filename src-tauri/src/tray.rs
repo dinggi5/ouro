@@ -22,7 +22,7 @@ use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, Runtime, WebviewWindow, Window,
+    AppHandle, Manager, Runtime, WebviewWindow, Window,
 };
 
 /// 트레이 아이콘 id — rect() 조회·엔소 세 모양 교체(`refresh_mark`) 때 다시 찾으려고 고정한다.
@@ -365,22 +365,15 @@ pub(crate) fn on_blur<R: Runtime>(win: &Window<R>) {
     }
 }
 
-/// 메뉴바 아이콘을 만든다. 좌클릭 = 팝오버 토글, 우클릭 = 메뉴(열기·크게 보기·iCloud 동기화·업데이트 확인·종료).
+/// 메뉴바 아이콘을 만든다. 좌클릭 = 팝오버 토글, 우클릭 = 메뉴(열기·크게 보기·설정·종료).
 /// 도크 아이콘이 없으니 종료할 길은 이 메뉴와 ⌘Q 뿐이다 — 빼지 말 것.
 pub(crate) fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let open_i = MenuItem::with_id(app, "open", "Ouro 열기", true, None::<&str>)?;
-    // 크게 보기(개발 12) — 같은 화면을 넓은 창으로. 열린 동안만 도크에 보인다(wide.rs).
     let wide_i = MenuItem::with_id(app, "wide", "크게 보기", true, None::<&str>)?;
-    // 업데이트 확인은 팝오버를 띄우고 프론트에게 «지금 확인» 을 알린다 — 결과(노트·설치 버튼)는 팝오버가 보인다(update.rs).
-    let update_i = MenuItem::with_id(app, "update", "업데이트 확인…", true, None::<&str>)?;
+    // 동기화·업데이트 확인·버전은 설정 창 하나로 모았다(개발 16).
+    let settings_i = MenuItem::with_id(app, "settings", "설정…", true, Some("CmdOrCtrl+,"))?;
     let quit_i = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
-    // iCloud 동기화(개발 10)는 헬퍼(OuroSync.app)가 든 앱에만 메뉴가 있다 — 없는 기능을 내밀지 않는다.
-    let sync_i = MenuItem::with_id(app, "sync", "iCloud 동기화…", true, None::<&str>)?;
-    let menu = if crate::sync::find_helper().is_some() {
-        Menu::with_items(app, &[&open_i, &wide_i, &sync_i, &update_i, &quit_i])?
-    } else {
-        Menu::with_items(app, &[&open_i, &wide_i, &update_i, &quit_i])?
-    };
+    let menu = Menu::with_items(app, &[&open_i, &wide_i, &settings_i, &quit_i])?;
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(Image::from_bytes(ICON_IDLE)?)
@@ -392,14 +385,7 @@ pub(crate) fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => show(app),
             "wide" => crate::wide::open(app),
-            "update" => {
-                show(app);
-                let _ = app.emit("update-check", ());
-            }
-            "sync" => {
-                show(app);
-                let _ = app.emit("sync-open", ());
-            }
+            "settings" => crate::settings::open(app),
             "quit" => app.exit(0),
             _ => {}
         })

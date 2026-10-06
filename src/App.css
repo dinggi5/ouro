@@ -68,16 +68,16 @@
 }
 
 :root {
-  /* 라이트 — 生成り(키나리, 표백 안 한 무명) 바탕 · 먹 글자 · 朱(주홍, 인주) 하나(개발 13, Ouro DESIGN «정체성»).
-     회색은 전부 노란 기운을 아주 조금 머금는다 — 푸른 회색(토스)이면 주홍이 떠 보인다.
-     글자로 쓰는 ink-muted·accent 는 canvas·surface 모두 4.5:1 이상(WCAG AA, 코덱스 개발 13 1차). */
-  --canvas: #f7f4ec;
-  --surface: #fcfaf5;
-  --surface-sunken: #efebe1;
-  --hairline: #e3ded2;
-  --ink: #22201c;
-  --ink-secondary: #57524a;
-  --ink-muted: #726c61;
+  /* 라이트 — 미색 흰 바탕 · 먹 글자 · 朱 하나(개발 16 사장 지시로 키나리에서 바꿈: «오줌색 말고 깔끔한 미니멀, 미색 흰색»).
+     회색은 거의 무채색 — 아주 조금만 따뜻하게 두어 朱 가 차갑게 뜨지 않게.
+     글자로 쓰는 ink-muted·accent 는 canvas·surface 모두 4.5:1 이상(WCAG AA). */
+  --canvas: #fafaf8;
+  --surface: #ffffff;
+  --surface-sunken: #f2f2ef;
+  --hairline: #e8e8e4;
+  --ink: #1c1c1a;
+  --ink-secondary: #4f4e4a;
+  --ink-muted: #6f6e6a;
   --accent: #bf4329;
 
   font-family: var(--font-sans);
@@ -92,14 +92,14 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    /* 따뜻한 먹 — 순흑이 아니라 먹물을 갈아 둔 벼루 빛. 글자는 키나리 쪽으로. */
-    --canvas: #1b1a17;
-    --surface: #22211d;
-    --surface-sunken: #2a2824;
-    --hairline: #38352f;
-    --ink: #ece7dc;
-    --ink-secondary: #a39d92;
-    --ink-muted: #908a7e;
+    /* 먹 — 순흑이 아니라 아주 조금 따뜻한 짙은 회색. */
+    --canvas: #161615;
+    --surface: #1e1e1d;
+    --surface-sunken: #262624;
+    --hairline: #33332f;
+    --ink: #ededea;
+    --ink-secondary: #a3a29d;
+    --ink-muted: #8e8d88;
     --accent: #e98466; /* 朱 on dark */
   }
 }

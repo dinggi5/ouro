@@ -1,4 +1,4 @@
-// 색·글자 — 맥(src/App.css)과 같은 토큰: 生成り(키나리) 바탕 · 먹 글자 · 朱(주홍) 하나(개발 13, DESIGN.md «정체성»).
+// 색·글자 — 맥(src/App.css)과 같은 토큰: 미색 흰 바탕 · 먹 글자 · 朱(주홍) 하나(개발 13, 바탕은 개발 16 에 키나리 → 미색 흰색, DESIGN.md «정체성»).
 // Ouro 규칙: **색을 갖는 건 부탁·답·제안뿐**(«액센트 = AI 가 관여한 것»). 저장 버튼·고른 날짜·스위치도 먹색(ink)이고, 빨강은 없다(오류도 먹색 문장).
 
 import SwiftUI
@@ -8,13 +8,13 @@ extension Color {
     static func dyn(_ light: UInt32, _ dark: UInt32) -> Color {
         Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(hex: dark) : UIColor(hex: light) })
     }
-    static let canvas = dyn(0xF7F4EC, 0x1B1A17)
-    static let surface = dyn(0xFCFAF5, 0x22211D)
-    static let sunken = dyn(0xEFEBE1, 0x2A2824)
-    static let hairline = dyn(0xE3DED2, 0x38352F)
-    static let ink = dyn(0x22201C, 0xECE7DC)
-    static let inkSecondary = dyn(0x57524A, 0xA39D92)
-    static let inkMuted = dyn(0x726C61, 0x908A7E)
+    static let canvas = dyn(0xFAFAF8, 0x161615)
+    static let surface = dyn(0xFFFFFF, 0x1E1E1D)
+    static let sunken = dyn(0xF2F2EF, 0x262624)
+    static let hairline = dyn(0xE8E8E4, 0x33332F)
+    static let ink = dyn(0x1C1C1A, 0xEDEDEA)
+    static let inkSecondary = dyn(0x4F4E4A, 0xA3A29D)
+    static let inkMuted = dyn(0x6F6E6A, 0x8E8D88)
     /// 朱 — AI 가 관여한 것(부탁·답·제안)에만.
     static let ai = dyn(0xBF4329, 0xE98466)
 }

@@ -52,6 +52,25 @@ struct UpdateProgress {
     total: Option<u64>,
 }
 
+/// 저절로 확인 켬/끔(개발 16, 설정 창). 기본은 켬 — «off» 로 적었을 때만 끈다. 끄면 사람이 «지금 확인» 을 누를 때만 묻는다.
+const KEY_AUTO: &str = "update_auto";
+/// 켬/끔이 바뀜 — 저절로 확인을 도는 팝오버가 다시 읽는다.
+const AUTO_EVENT: &str = "update-auto-changed";
+
+#[tauri::command]
+pub(crate) fn update_auto(core: State<'_, crate::CoreState>) -> bool {
+    // DB 를 못 열었으면 켬 — 업데이트가 그 문제를 고칠 수도 있다(설치 가드와 같은 결).
+    core.inner().as_ref().map_or(true, |c| c.store.setting(KEY_AUTO).ok().flatten().as_deref() != Some("off"))
+}
+
+#[tauri::command]
+pub(crate) fn set_update_auto(app: AppHandle, core: State<'_, crate::CoreState>, on: bool) -> Result<(), String> {
+    let c = core.inner().as_ref().map_err(Clone::clone)?;
+    c.store.set_setting(KEY_AUTO, if on { "on" } else { "off" })?;
+    let _ = app.emit(AUTO_EVENT, on);
+    Ok(())
+}
+
 /// 새 버전이 있나. 있으면 정보를 돌려주고 객체를 담아 둔다. 네트워크가 없으면 Err — 자주 있는 일이라 프론트는 저절로 확인할 땐 조용히 넘긴다.
 #[tauri::command]
 pub(crate) async fn check_update(app: AppHandle, state: State<'_, PendingUpdate>) -> Result<Option<UpdateInfo>, String> {

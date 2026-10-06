@@ -41,20 +41,26 @@ pub(crate) fn open<R: Runtime>(app: &AppHandle<R>) {
         }
         Err(e) => {
             eprintln!("ouro: 크게 보기 창을 못 열었어요 — {e}");
-            on_closed(app);
+            policy_after(app, LABEL);
         }
     }
 }
 
-/// 창이 없어졌을 때 — 다시 메뉴바에만 산다.
-pub(crate) fn on_closed<R: Runtime>(app: &AppHandle<R>) {
+/// 보통 창(크게 보기·설정) 하나가 없어졌을 때 — 남은 보통 창이 없으면 다시 메뉴바에만 산다(개발 16: 설정 창이 생겨 둘이 됐다).
+/// `gone` 은 지금 없어지는 창 — Destroyed 시점엔 아직 목록에 남아 있을 수 있어 빼고 센다.
+pub(crate) fn policy_after<R: Runtime>(app: &AppHandle<R>, gone: &str) {
+    let left = [LABEL, crate::settings::LABEL].into_iter().any(|l| l != gone && app.get_webview_window(l).is_some());
     #[cfg(target_os = "macos")]
-    let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+    if !left {
+        let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = left;
 }
 
-/// 이 창이 열려 있으면 앞으로 가져오고 true. 도크 아이콘 클릭(Reopen)이 팝오버 대신 이 창으로 가게.
+/// 보통 창(크게 보기 먼저, 없으면 설정)이 열려 있으면 앞으로 가져오고 true. 도크 아이콘 클릭(Reopen)이 팝오버 대신 이 창으로 가게.
 pub(crate) fn raise<R: Runtime>(app: &AppHandle<R>) -> bool {
-    let Some(w) = app.get_webview_window(LABEL) else {
+    let Some(w) = app.get_webview_window(LABEL).or_else(|| app.get_webview_window(crate::settings::LABEL)) else {
         return false;
     };
     let _ = w.unminimize();

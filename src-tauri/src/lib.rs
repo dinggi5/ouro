@@ -12,6 +12,7 @@
 //   update  인앱 업데이트 — 확인은 저절로, 설치는 사람이 노트를 보고 누를 때만 (개발 8)
 //   sync    iCloud 동기화의 앱 쪽 — 바뀐 줄 장부·레코드 변환·합치기·헬퍼(OuroSync.app) 관리·실행 맥 (개발 10)
 //   wide    «크게 보기» 창 — 같은 화면을 넓게, 열린 동안만 도크에 (개발 12)
+//   settings 설정 창 — 동기화·실행 맥·브리핑·업데이트·버전을 한곳에 (개발 16)
 //
 // 이 파일에는 앱 셸만 둔다: 커맨드(프론트가 부르는 문) + run(). 판단은 전부 모듈에 있다.
 
@@ -21,6 +22,7 @@ mod dispatch;
 mod errands;
 mod mcp;
 mod notify;
+mod settings;
 mod store;
 mod sync;
 mod tray;
@@ -252,6 +254,19 @@ fn set_morning_briefing(app: tauri::AppHandle, state: State<'_, CoreState>, on: 
     r
 }
 
+/// 아침 브리핑 알림 시각(자정부터 분, 30분 단위) — 설정 창(개발 16).
+#[tauri::command]
+fn set_briefing_time(app: tauri::AppHandle, state: State<'_, CoreState>, minutes: u32) -> Result<(), String> {
+    if !brief::valid_at(minutes) {
+        return Err("시각이 이상해요".into());
+    }
+    let r = core(&state)?.store.set_setting(brief::KEY_AT, &minutes.to_string());
+    if r.is_ok() {
+        touched(&app);
+    }
+    r
+}
+
 /// 창 [from, to) (UTC ms) 에 걸치는 일정.
 #[tauri::command]
 fn list_events(state: State<'_, CoreState>, from: i64, to: i64) -> Result<Vec<Event>, String> {
@@ -419,7 +434,7 @@ fn mcp_clients(state: State<'_, CoreState>) -> Result<Vec<String>, String> {
 /// 프론트가 직접 부른다(App.tsx). 팝오버의 종착지는 트레이 클릭과 같은 `tray::hide`, 크게 보기는 창을 없앤다.
 #[tauri::command]
 fn close_window(window: tauri::Window) {
-    if window.label() == wide::LABEL {
+    if window.label() == wide::LABEL || window.label() == settings::LABEL {
         let _ = window.close();
     } else {
         tray::hide(window.app_handle());
@@ -430,6 +445,23 @@ fn close_window(window: tauri::Window) {
 #[tauri::command]
 fn open_wide(app: tauri::AppHandle) {
     wide::open(&app);
+}
+
+/// 설정 창을 연다(팝오버 아래 동기화 오류 줄 · ⌘,).
+#[tauri::command]
+fn open_settings(app: tauri::AppHandle) {
+    settings::open(&app);
+}
+
+/// 설정 창의 «Ouro 1.0.0» 과 «최신 버전이에요 · 1.0.0».
+#[derive(Serialize)]
+struct AppInfo {
+    version: String,
+}
+
+#[tauri::command]
+fn app_info(app: tauri::AppHandle) -> AppInfo {
+    AppInfo { version: app.package_info().version.to_string() }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -464,13 +496,17 @@ pub fn run() {
             if std::env::var_os("OURO_OPEN_WIDE").is_some() {
                 wide::open(app.handle());
             }
+            #[cfg(debug_assertions)]
+            if std::env::var_os("OURO_OPEN_SETTINGS").is_some() {
+                settings::open(app.handle());
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
-            // 크게 보기 창은 보통 창이다 — 닫으면 없어지고(도크에서도 빠진다), 포커스를 잃어도 그대로 있다.
-            if window.label() == wide::LABEL {
+            // 크게 보기·설정 창은 보통 창이다 — 닫으면 없어지고(남은 보통 창이 없으면 도크에서도 빠진다), 포커스를 잃어도 그대로 있다.
+            if window.label() == wide::LABEL || window.label() == settings::LABEL {
                 if let tauri::WindowEvent::Destroyed = event {
-                    wide::on_closed(window.app_handle());
+                    wide::policy_after(window.app_handle(), window.label());
                 }
                 return;
             }
@@ -487,6 +523,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             close_window,
             open_wide,
+            open_settings,
+            app_info,
             list_events,
             list_errands,
             create_errand,
@@ -499,6 +537,7 @@ pub fn run() {
             list_runs,
             briefing,
             set_morning_briefing,
+            set_briefing_time,
             create_event,
             update_event,
             delete_event,
@@ -518,14 +557,16 @@ pub fn run() {
             make_runner,
             sync_fetch,
             update::check_update,
-            update::install_update
+            update::install_update,
+            update::update_auto,
+            update::set_update_auto
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app, event| {
             // 도크 아이콘이 없어도 Finder·Spotlight 로 이미 켜진 앱을 다시 열면 이 이벤트가 온다
             // (applicationShouldHandleReopen) — 트레이가 노치 뒤에 숨었을 때의 두 번째 길.
-            // 크게 보기가 열려 있으면(= 도크에 아이콘이 있을 때) 도크 클릭은 그 창으로.
+            // 크게 보기·설정이 열려 있으면(= 도크에 아이콘이 있을 때) 도크 클릭은 그 창으로.
             if let tauri::RunEvent::Reopen { .. } = event {
                 if !wide::raise(app) {
                     tray::show(app);

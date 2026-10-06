@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 엔소(円相, 붓으로 한 번에 그린 원) — 우로의 표지(개발 13). **모양의 정본은 이 파일 하나**이고, 나머지는 여기서 만든다:
 //   src/lib/enso.ts            웹(부탁 점·제안 카드 머리)
-//   ios/Ouro/Enso.swift        iOS(ErrandMark)
+//   ios/Shared/Enso.swift        iOS(ErrandMark)
 //   src-tauri/icons/icon.svg   맥 앱 아이콘 원본 → npx tauri icon(아래)
 //   src-tauri/icons/tray-*.svg 메뉴바 세 상태(대기 · 도는 중 · 답 도착) → 44px PNG
 //   ios/icon.svg               iOS 앱 아이콘 원본 → 알파 없는 1024 PNG
@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SHU = "#BF4329"; // 朱 — 라이트 액센트(App.css --accent)
-const KINARI = "#F7F4EC"; // 生成り — 라이트 바탕(App.css --canvas)
+const PAPER = "#FAFAF8"; // 미색 흰 — 라이트 바탕(App.css --canvas, 개발 16 에 키나리에서 바꿈)
 
 const R = 9.5;
 const A1 = -32; // 획이 시작하는 각(도, y 아래 방향 = 시계방향)
@@ -68,7 +68,7 @@ write(
 
 const swiftPts = (pts) => pts.map(([x, y]) => `(${x}, ${y})`).join(", ");
 write(
-  "ios/Ouro/Enso.swift",
+  "ios/Shared/Enso.swift",
   `// ${HEAD}.\n// 엔소(붓 한 번 원) — 24 단위 판의 점들. 맥(src/lib/enso.ts)과 같은 모양.\n\nimport SwiftUI\n\n` +
     `enum EnsoGeometry {\n    static let r: CGFloat = ${R}\n    static let stroke: [(CGFloat, CGFloat)] = [${swiftPts(POINTS)}]\n` +
     `    static let runClip: [(CGFloat, CGFloat)] = [${swiftPts(WEDGE)}]\n}\n\n` +
@@ -83,13 +83,13 @@ const svg = (w, body, note) =>
 // 24 판을 반지름 rOut 의 원으로 놓는다.
 const place = (cx, cy, rOut) => `translate(${f(cx - 12 * (rOut / R))} ${f(cy - 12 * (rOut / R))}) scale(${f(rOut / R)})`;
 
-// 맥 앱 아이콘 — macOS 격자(824 판, 1024 캔버스). 키나리 판에 주홍 엔소.
+// 맥 앱 아이콘 — macOS 격자(824 판, 1024 캔버스). 미색 판에 주홍 엔소.
 write(
   "src-tauri/icons/icon.svg",
   svg(
     1024,
-    `  <rect x="100" y="100" width="824" height="824" rx="185" fill="${KINARI}"/>\n  <path transform="${place(512, 512, 268)}" d="${PATH}" fill="${SHU}"/>`,
-    "맥 앱 아이콘 원본 — 키나리 판 위 주홍 엔소. 수정 시 node scripts/enso.mjs → npx tauri icon src-tauri/icons/icon.svg",
+    `  <rect x="100" y="100" width="824" height="824" rx="185" fill="${PAPER}"/>\n  <path transform="${place(512, 512, 268)}" d="${PATH}" fill="${SHU}"/>`,
+    "맥 앱 아이콘 원본 — 미색 판 위 주홍 엔소. 수정 시 node scripts/enso.mjs → npx tauri icon src-tauri/icons/icon.svg",
   ),
 );
 // iOS — 모서리는 시스템이 깎으니 판을 꽉 채운다.
@@ -97,7 +97,7 @@ write(
   "ios/icon.svg",
   svg(
     1024,
-    `  <rect width="1024" height="1024" fill="${KINARI}"/>\n  <path transform="${place(512, 512, 330)}" d="${PATH}" fill="${SHU}"/>`,
+    `  <rect width="1024" height="1024" fill="${PAPER}"/>\n  <path transform="${place(512, 512, 330)}" d="${PATH}" fill="${SHU}"/>`,
     "iOS 앱 아이콘 원본 — 맥과 같은 엔소, 판을 꽉 채운다(App Store 는 알파 없는 PNG).",
   ),
 );

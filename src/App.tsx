@@ -16,12 +16,12 @@ import { DayList } from "./components/DayList";
 import { MonthGrid, monthGridRange } from "./components/MonthGrid";
 import { blankDraft, EventSheet, fromEvent, toInput, type Draft } from "./components/EventSheet";
 import { UpdateCard, UpdateLine } from "./components/UpdateCard";
-import { SyncCard, SyncLine } from "./components/SyncCard";
+import { SyncLine } from "./components/SyncCard";
 import { ErrandProposalCard } from "./components/ErrandProposalCard";
 import { ProposalCard } from "./components/ProposalCard";
 import { QuickBar } from "./components/QuickBar";
 import { blankErrandDraft, errandInputToDraft, errandToDraft, ErrandSheet, type ErrandDraft } from "./components/ErrandSheet";
-import { errandApi, rowsOn, type Briefing, type Errand, type ErrandInput, type QuickErrand } from "./lib/errands";
+import { errandApi, minutesLabel, rowsOn, type Briefing, type Errand, type ErrandInput, type QuickErrand } from "./lib/errands";
 import {
   asEvent,
   clientLabel,
@@ -158,7 +158,8 @@ function App() {
   const [aiClients, setAiClients] = useState<string[]>([]);
   const [brief, setBrief] = useState<Briefing | null>(null);
   const quickRef = useRef<HTMLInputElement>(null);
-  const update = useUpdate();
+  // 저절로 확인은 팝오버만 — 크게 보기까지 돌면 같은 확인이 두 번 겹친다.
+  const update = useUpdate(!WIDE);
   const sync = useSync();
   const [addMenu, setAddMenu] = useState(false);
 
@@ -600,7 +601,7 @@ function App() {
     try {
       await errandApi.setMorning(!brief.morning);
       setBrief({ ...brief, morning: !brief.morning });
-      showToast(brief.morning ? "아침 브리핑 알림을 껐어요" : "매일 아침 8시에 알려 드려요");
+      showToast(brief.morning ? "아침 브리핑 알림을 껐어요" : `매일 ${minutesLabel(brief.morningAt)}에 알려 드려요`);
     } catch (e) {
       showToast(errorText(e));
     }
@@ -658,7 +659,7 @@ function App() {
     [view],
   );
 
-  // 키보드: ⌘W 닫기(창이 무테라 AppKit 이 안 준다, Kura 개발 58), ⌘N 빠른 입력으로, Esc 시트 닫기, ←/→ 넘기기, T 오늘.
+  // 키보드: ⌘W 닫기(창이 무테라 AppKit 이 안 준다, Kura 개발 58), ⌘N 빠른 입력으로, ⌘, 설정, Esc 시트 닫기, ←/→ 넘기기, T 오늘.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const typing = e.target instanceof HTMLElement && e.target.closest("input, textarea, select");
@@ -679,6 +680,9 @@ function App() {
         if (k === "w") {
           e.preventDefault();
           void invoke("close_window");
+        } else if (k === ",") {
+          e.preventDefault();
+          void invoke("open_settings");
         } else if (k === "n" && (WIDE || (!sheet && !errandSheet))) {
           e.preventDefault();
           quickRef.current?.focus();
@@ -863,8 +867,6 @@ function App() {
         }
         hidden={!!top}
       />
-      {/* 카드는 한 장만 — 제안·업데이트 카드가 떠 있으면 동기화 카드는 물러난다(640 창에서 버튼이 밀리지 않게). */}
-      <SyncCard sync={sync} hidden={!!top || (update.open && !!update.info)} now={now.getTime()} />
 
       <section className="min-h-0 flex-1 overflow-y-auto px-5 pt-4 pb-5">
         {fatal ? (
@@ -877,7 +879,7 @@ function App() {
                 <button
                   type="button"
                   onClick={() => void toggleMorning()}
-                  title={brief.morning ? "매일 아침 8시에 이 요약을 알림으로 받아요" : "아침 알림이 꺼져 있어요"}
+                  title={brief.morning ? `매일 ${minutesLabel(brief.morningAt)}에 이 요약을 알림으로 받아요` : "아침 알림이 꺼져 있어요"}
                   className="shrink-0 text-micro text-ink-muted hover:text-ink-secondary"
                 >
                   {brief.morning ? "아침 알림 켬" : "아침 알림 끔"}

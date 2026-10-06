@@ -95,6 +95,7 @@ export const errandApi = {
   runs: (id: number) => invoke<Run[]>("list_runs", { id }),
   briefing: () => invoke<Briefing>("briefing"),
   setMorning: (on: boolean) => invoke<void>("set_morning_briefing", { on }),
+  setMorningAt: (minutes: number) => invoke<void>("set_briefing_time", { minutes }),
 };
 
 /** 오늘 브리핑 — 러스트 `brief.rs`. 전부 로컬 계산(일정이 바깥으로 안 나간다). */
@@ -105,9 +106,17 @@ export type Briefing = {
   free: [number, number][];
   /** « · » 로 이을 짧은 구절. 비면 오늘 아무것도 없다. */
   parts: string[];
-  /** 아침 8시 알림이 켜져 있나. */
+  /** 아침 알림이 켜져 있나. */
   morning: boolean;
+  /** 알림 시각(자정부터 분, 30분 단위). */
+  morningAt: number;
 };
+
+/** 자정부터 분 → «오전 8:00». */
+export function minutesLabel(m: number): string {
+  const d = new Date(2000, 0, 1, Math.floor(m / 60), m % 60);
+  return d.toLocaleTimeString("ko-KR", { hour: "numeric", minute: "2-digit" });
+}
 
 export type ErrandState = "waiting" | "running" | "done" | "failed" | "stopped" | "skipped";
 
